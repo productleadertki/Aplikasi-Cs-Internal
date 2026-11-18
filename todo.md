@@ -108,6 +108,5 @@
 - [x] Siapkan versi statis untuk hosting live
 - [x] Deploy dan verifikasi URL live
 
-- [ ] Unggah dokumentasi, log, todo, arsip, dan sumber hosting ke GitHub
-- [ ] Verifikasi semua file terunggah tanpa tasks/ atau Git bersarang
-
+- [x] Unggah dokumentasi, log, todo, arsip, dan sumber hosting ke GitHub
+- [x] Verifikasi semua file terunggah tanpa tasks/ atau Git bersarang
