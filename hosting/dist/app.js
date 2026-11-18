@@ -34,6 +34,7 @@ const copy = value => JSON.parse(JSON.stringify(value));
 let state;
 try { state = {...copy(seed), ...JSON.parse(localStorage.getItem(KEY) || "{}")}; } catch { state = copy(seed); }
 state.customViews ||= [];
+state.sessionRole ||= "Admin";
 state.customers ||= copy(seed.customers);
 state.tags ||= copy(seed.tags);
 state.accountUsers ||= copy(seed.accountUsers);
@@ -46,6 +47,15 @@ if(!state.tickets.some(t=>t.id==="CP-20261110-0028"))state.tickets.push(copy(see
 state.tickets.forEach(t=>{if(!t.source)t.source=t.id==="CP-20261114-0034"?"Closepay":t.channel==="Merchant"?"Merchant":"PSP";t.notes ||= [];t.campaigns ||= [];t.lastActivityAt ||= t.created;if(!Number.isFinite(t.unread))t.unread=t.messages?.at(-1)?.type==="customer"?1:0;});
 state.templates.forEach((item,index)=>{item.category ||= index===1?"Kendala":index>1?"Otomatis":"Umum";item.command ||= ["/salam","/detail","/luarjam","/libur"][index]||("/template"+(index+1));});
 state.settings.timezone ||= "Asia/Jakarta";
+state.settings.holidays ||= state.settings.holiday?[{start:state.settings.holiday,end:state.settings.holiday,description:"Tanggal merah"}]:[];
+state.settings.routingMethod ||= "least-active";
+state.settings.maxOngoingChats ||= 5;
+state.settings.busyReply ||= "Terima kasih sudah menghubungi Closepay. Agen belum tersedia; pesan Anda masuk antrean.";
+state.settings.frtMinutes ||= 15;
+state.settings.resolutionMinutes ||= 30;
+state.settings.pausePendingSla ??= true;
+state.agents.forEach(agent=>{agent.onlineSince ||= agent.online?new Date().toISOString():null;agent.availabilityLog ||= [];});
+state.tickets.forEach(room=>{room.surveys ||= [];room.pendingIntervals ||= [];const first=room.messages?.find(message=>message.type==="agent"&&!message.text?.startsWith("[Internal] "));if(first&&!room.firstAgentResponseAt){const time=slaMessageTime(room,first);if(Number.isFinite(time))room.firstAgentResponseAt=new Date(time).toISOString();}if(["Selesai","Ditutup"].includes(room.status)&&!room.resolvedAt&&first){const time=slaMessageTime(room,[...room.messages].reverse().find(message=>message.type==="agent"));if(Number.isFinite(time))room.resolvedAt=new Date(time).toISOString();}if(room.rating>0&&!room.surveys.some(item=>item.type==="csat")){room.surveys.push({type:"csat",status:"answered",score:room.rating,comment:room.csatComment||"",sentAt:room.resolvedAt||room.created,answeredAt:room.csatResponseAt||room.resolvedAt||room.created,expiresAt:room.csatResponseAt||room.resolvedAt||room.created,resolvedAt:room.resolvedAt,question:"Bagaimana layanan kami?"});}});
 state.settings.officeHours ||= Object.fromEntries([0,1,2,3,4,5,6].map(day=>[day,{enabled:day>0&&day<6||state.settings.workdays==="Setiap hari"||day===6&&state.settings.workdays==="Senin–Sabtu",in:state.settings.open||"08:00",out:state.settings.close||"17:00"}]));
 state.settings.officeTemplate ||= state.templates[0].command;
 state.settings.outsideTemplate ||= state.templates[2].command;
@@ -56,7 +66,7 @@ state.settings.customerSurvey.surveyTitle ||= seed.settings.customerSurvey.surve
 state.settings.customerSurvey.thankYouMessage ||= seed.settings.customerSurvey.thankYouMessage;
 state.settings.customerSurvey.types ||= copy(seed.settings.customerSurvey.types);
 ["csat","ces","nps"].forEach(type=>{state.settings.customerSurvey.types[type]={...copy(seed.settings.customerSurvey.types[type]),...state.settings.customerSurvey.types[type]};});
-["csat","ces","nps"].forEach(type=>{const config=state.settings.customerSurvey.types[type];config.channels ||= [];if(type==="csat")config.answers ||= copy(seed.settings.customerSurvey.types[type].answers);config.followUpByScore=Array.from({length:type==="nps"?11:5},(_,index)=>config.followUpByScore?.[index]||"");});
+["csat","ces","nps"].forEach(type=>{const config=state.settings.customerSurvey.types[type];config.channels ||= [];if(type==="csat")config.answers ||= copy(seed.settings.customerSurvey.types[type].answers);config.followUpByScore=Array.from({length:type==="nps"?11:type==="ces"?7:5},(_,index)=>config.followUpByScore?.[index]||"");});
 let page = "tickets", selected = null, focusedTicket = null, inboxView = "All Chats", channelFilter = "Semua kanal", sortOrder = "Newest", showModal = false, selectedIntegrationId = null, notificationPanelOpen = false, toastTimer;
 let settingsTab="Auto Responder";
 let surveyExpanded="csat";
@@ -67,6 +77,7 @@ let slaEditorOpen=false;
 const reportNowJakarta=new Date(new Date().toLocaleString("en-US",{timeZone:"Asia/Jakarta"}));
 let reportDateFilter=[reportNowJakarta.getFullYear(),String(reportNowJakarta.getMonth()+1).padStart(2,"0"),String(reportNowJakarta.getDate()).padStart(2,"0")].join("-");
 let reportTimezoneFilter="Asia/Jakarta",reportChannelFilter="All channels",reportDivisionFilter="All divisions",reportConversationSearch="",reportRowsPerPage=10,reportListPage=1,reportInterval="Hourly";
+let reportFrom=new Date(reportNowJakarta.getTime()-30*86400000).toISOString().slice(0,10),reportTo=reportDateFilter,reportAgentFilter="All agents";
 let surveyReportPeriod="all",surveyReportChannel="all",surveyReportDay="",surveyReportAgent="all";
 let dashboardYear=new Date(new Date().toLocaleString("en-US",{timeZone:"Asia/Jakarta"})).getFullYear();
 let slaFrom="",slaTo="",slaFirstPage=1,slaResolutionPage=1,historyExpanded=false;
@@ -75,6 +86,19 @@ const panelOpen={sla:true,associated:true,profile:true,conversation:false,notes:
 const main = document.getElementById("mainContent");
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const save = () => localStorage.setItem(KEY, JSON.stringify(state));
+function syncSla(room){const result=CSEngine.metrics(room,state.settings);room.is_frt_breached=result.is_frt_breached;room.is_resolution_breached=result.is_resolution_breached;return result;}
+function routeQueued(){const assignments=CSEngine.routeQueue(state.tickets,state.agents,state.settings);assignments.forEach(({ticket:room,agent})=>log(room,"Ditugaskan otomatis ke "+agent.name+"."));return assignments;}
+function surveyChannelId(channel){return state.integrations.find(item=>item.name===channel)?.id||"";}
+function sendSurveys(room,manual=false){
+ const config=state.settings.customerSurvey;if(!manual&&config.sendMethod!=="automatic")return 0;
+ let count=0,now=new Date();
+ for(const type of ["csat","ces","nps"]){const item=config.types[type];if(!item?.enabled||!item.channels.includes(surveyChannelId(room.channel)))continue;
+  if(room.surveys.some(survey=>survey.type===type&&survey.resolvedAt===room.resolvedAt))continue;
+  room.surveys.push({type,status:"sent",sentAt:now.toISOString(),expiresAt:new Date(now.getTime()+(Number(config.expiryHours)||24)*3600000).toISOString(),resolvedAt:room.resolvedAt,question:item.question});count++;
+ }
+ if(count)log(room,count+" survei dikirim ke pelanggan.");return count;
+}
+function expireSurveys(){let changed=false;for(const room of state.tickets)for(const survey of room.surveys||[])if(survey.status==="sent"&&new Date(survey.expiresAt)<new Date()){survey.status="expired";changed=true;}if(changed)save();}
 const nowWib = () => new Date().toLocaleString("id-ID",{timeZone:"Asia/Jakarta",hour:"2-digit",minute:"2-digit",hour12:false}).replace(".",":");
 const stamp = () => new Date().toLocaleString("id-ID",{timeZone:"Asia/Jakarta",day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:false})+" WIB";
 const ticket = () => state.tickets.find(t => t.id === selected) || state.tickets[0];
@@ -178,6 +202,7 @@ function detailPanel(key,title,body){
   return `<section class="panel detail-card"><button class="detail-toggle" data-panel-toggle="${key}" aria-expanded="${open}"><span>${title}</span><span class="panel-chevron" aria-hidden="true">${open?"⌃":"⌄"}</span></button><div class="detail-panel-body" ${open?"":"hidden"}>${body}</div></section>`;
 }
 function renderDetails(t){
+ const sla=syncSla(t),firstRemaining=Math.max(0,state.settings.frtMinutes*60000-sla.firstMs),resolutionRemaining=Math.max(0,state.settings.resolutionMinutes*60000-sla.resolutionMs);
  const deadline=new Date(t.created).getTime()+86400000;
  const remaining=Math.ceil(Math.abs(deadline-Date.now())/3600000);
  const resolved=["Selesai","Ditutup"].includes(t.status);
@@ -185,7 +210,7 @@ function renderDetails(t){
  const related=state.tickets.filter(x=>x.id!==t.id && (x.userId===t.userId || x.school===t.school));
  const historyCards=state.tickets.filter(x=>x.userId===t.userId).sort((a,b)=>new Date(b.created)-new Date(a.created));
  const bodies={
-   sla:`${pill(slaText,resolved?"green":deadline<Date.now()?"red":"amber")}${detailRow("Target","1 × 24 jam")}${detailRow("Batas",dateWib(deadline))}<div class="detail-actions"><button class="button success" data-action="complete" ${resolved?"disabled":""}>✓ Selesaikan</button></div>`,
+   sla:`${pill(resolved?"Stopped":sla.paused?"Paused":"Running",resolved?"green":sla.is_resolution_breached?"red":"amber")}${detailRow("FRT",`${slaDuration(sla.firstMs)} / ${state.settings.frtMinutes} menit · ${sla.is_frt_breached?"Breached":slaDuration(firstRemaining)+" sisa"}`)}${detailRow("Resolusi",`${slaDuration(sla.resolutionMs)} / ${state.settings.resolutionMinutes} menit · ${sla.is_resolution_breached?"Breached":slaDuration(resolutionRemaining)+" sisa"}`)}<div class="detail-actions"><button class="button success" data-action="complete" ${resolved?"disabled":""}>✓ Selesaikan</button>${resolved?`<button class="button" data-action="send-survey">Kirim survei manual</button>`:""}${!resolved&&state.settings.pausePendingSla?`<button class="button" data-action="toggle-pending">${t.status==="Menunggu pelanggan"?"Lanjutkan SLA":"Jeda SLA · Pending"}</button>`:""}</div>`,
    associated:`<div class="associated-section"><b>Kontak terkait (${related.length})</b>${related.length?related.map(x=>`<div class="related-item">${esc(x.name)}<small>${esc(x.userId)} · ${esc(x.school)}</small></div>`).join(""):'<p class="muted">Belum ada kontak terkait.</p>'}</div>`,
    profile:`${detailRow("Nama",t.customerProfile?.name||t.name)}${detailRow("ID pengguna",t.userId)}${detailRow("Sekolah",t.customerProfile?.school||t.school)}${detailRow("Email",t.customerProfile?.email||"—")}${detailRow("Telepon",t.customerProfile?.phone||t.phone)}<div class="detail-actions"><button class="button" data-action="add-profile">+ Add customer profile</button></div>`,
    conversation:`${detailRow("Agent name",t.agent||"Belum ditugaskan")}${detailRow("Created",dateWib(t.created))}${detailRow("Last Activity",dateWib(t.lastActivityAt||t.created))}`,
@@ -244,6 +269,7 @@ function slaMessageTime(room,message){
 }
 function slaDuration(ms){return Number.isFinite(ms)&&ms>=0?reportFormatDuration(ms/1000):"—";}
 function slaRoomMetrics(room){
+ if(room.firstAgentResponseAt||room.resolvedAt){const metric=syncSla(room);return {first:room.firstAgentResponseAt?slaDuration(metric.firstMs):"—",resolution:room.resolvedAt?slaDuration(metric.resolutionMs):"—"};}
  const messages=room.messages||[],firstCustomer=messages.findIndex(message=>message.type==="customer");
  const reply=firstCustomer>=0?messages.slice(firstCustomer+1).find(message=>message.type==="agent"&&!message.text?.startsWith("[Internal] ")):null;
  const firstAt=firstCustomer>=0?slaMessageTime(room,messages[firstCustomer]):NaN,replyAt=reply?slaMessageTime(room,reply):NaN;
@@ -323,7 +349,7 @@ function renderSurveyChannels(type,config){
 }
 function renderSurveyFollowUp(type,config){
   const options=[["none","Don't use follow-up questions"],["all","Use one follow-up question for all scores"],["by-score","Use and create follow-up questions by score"]];
-  const scoreStart=type==="nps"?0:1,scoreCount=type==="nps"?11:5;
+  const scoreStart=type==="nps"?0:1,scoreCount=type==="nps"?11:type==="ces"?7:5;
   return `<fieldset class="survey-follow-up"><legend>Follow-up questions</legend><p>These will be asked after your customer has given the scoring.</p><div class="survey-follow-up-options">${options.map(([value,label])=>`<label><input type="radio" name="${type}-follow-up" value="${value}" data-survey-follow-up="${type}" ${config.followUp===value?"checked":""}> ${label}</label>`).join("")}</div><label class="survey-follow-up-question" ${config.followUp==="none"?"hidden":""}><span data-survey-follow-up-label>${config.followUp==="by-score"?"Questions by score":"Follow-up question"}</span><textarea name="followUpQuestion" data-survey-follow-up-question="${type}" maxlength="240" ${config.followUp==="by-score"?"hidden":""} placeholder="Type your follow-up question">${esc(config.followUpQuestion||"")}</textarea><div class="survey-follow-up-scores" ${config.followUp==="by-score"?"":"hidden"}>${Array.from({length:scoreCount},(_,index)=>`<label>Score ${scoreStart+index}<input type="text" data-survey-follow-up-score="${type}" data-score-index="${index}" maxlength="240" value="${esc(config.followUpByScore?.[index]||"")}" placeholder="Optional follow-up question"></label>`).join("")}</div></label></fieldset>`;
 }
 function renderSurveyType(type,config){
@@ -400,10 +426,10 @@ function reportDateKey(value,timezone=reportTimezoneFilter){
   return `${date.year}-${date.month}-${date.day}`;
 }
 function reportScopedTickets(){
-  return state.tickets.filter(item=>reportDateKey(item.created)===reportDateFilter&&(reportChannelFilter==="All channels"||item.channel===reportChannelFilter)&&(reportDivisionFilter==="All divisions"||(item.division||"Customer Service")===reportDivisionFilter));
+  return state.tickets.filter(item=>{const day=reportDateKey(item.created);return day>=(reportFrom||reportDateFilter)&&day<=(reportTo||reportDateFilter)&&(reportChannelFilter==="All channels"||item.channel===reportChannelFilter)&&(reportDivisionFilter==="All divisions"||(item.division||"Customer Service")===reportDivisionFilter)&&(reportAgentFilter==="All agents"||item.agent===reportAgentFilter);});
 }
 function reportMonthlyTickets(){
-  return state.tickets.filter(item=>reportDateKey(item.created).slice(0,7)===reportDateFilter.slice(0,7)&&(reportChannelFilter==="All channels"||item.channel===reportChannelFilter)&&(reportDivisionFilter==="All divisions"||(item.division||"Customer Service")===reportDivisionFilter));
+  return state.tickets.filter(item=>reportDateKey(item.created).slice(0,7)===reportDateFilter.slice(0,7)&&(reportChannelFilter==="All channels"||item.channel===reportChannelFilter)&&(reportDivisionFilter==="All divisions"||(item.division||"Customer Service")===reportDivisionFilter)&&(reportAgentFilter==="All agents"||item.agent===reportAgentFilter));
 }
 function reportFormatDuration(seconds){
   const total=Math.max(0,Math.round(seconds||0)),hours=Math.floor(total/3600),minutes=Math.floor(total%3600/60),remaining=total%60;
@@ -423,7 +449,22 @@ function reportAverageFirstResponse(items){
   }).filter(value=>value!==null);
   return times.length?times.reduce((sum,value)=>sum+value,0)/times.length:0;
 }
-function reportExportButton(section){return `<button type="button" class="report-export" data-action="report-export" data-report-export="${section}">⇩ <span>Export</span></button>`;}
+function reportOperationalMetrics(items){
+ const first=items.filter(item=>item.firstAgentResponseAt),closed=items.filter(item=>item.resolvedAt);
+ const average=(list,key)=>list.length?list.reduce((sum,item)=>sum+syncSla(item)[key],0)/list.length/1000:0;
+ const responded=first.length,resolved=closed.length;
+ const metFirst=first.filter(item=>!syncSla(item).is_frt_breached).length,metResolution=closed.filter(item=>!syncSla(item).is_resolution_breached).length;
+ return {frt:average(first,"firstMs"),resolution:average(closed,"resolutionMs"),art:average(first,"firstMs"),frtCompliance:responded?metFirst/responded*100:null,resolutionCompliance:resolved?metResolution/resolved*100:null};
+}
+function reportAgentAvailability(agent){
+ const from=new Date(`${reportFrom||reportDateFilter}T00:00:00+07:00`).getTime(),to=Math.min(Date.now(),new Date(`${reportTo||reportDateFilter}T23:59:59+07:00`).getTime());
+ if(to<=from)return {online:0,offline:0,shift:0};
+ const spans=[...(agent.availabilityLog||[]),...(agent.onlineSince?[{start:agent.onlineSince,end:new Date().toISOString()}]:[])];
+ const online=spans.reduce((sum,item)=>sum+Math.max(0,Math.min(to,new Date(item.end).getTime())-Math.max(from,new Date(item.start).getTime())),0);
+ let shift=0;for(let day=from;day<=to;day+=86400000){const local=CSEngine.dateParts(day,state.settings.timezone),hours=state.settings.officeHours[local.day];if(hours?.enabled&&!state.settings.holidays.some(item=>local.date>=item.start&&local.date<=item.end)){const [inHour,inMinute]=hours.in.split(":").map(Number),[outHour,outMinute]=hours.out.split(":").map(Number);shift+=Math.max(0,(outHour*60+outMinute-inHour*60-inMinute)*60000);}}
+ return {online,offline:Math.max(0,to-from-online),shift};
+}
+function reportExportButton(section){return `<button type="button" class="report-export" data-action="report-export" data-report-export="${section}" data-format="csv">⇩ CSV</button><button type="button" class="report-export" data-action="report-export" data-report-export="${section}" data-format="xlsx">⇩ XLSX</button>`;}
 function reportSection(title,description,section,content,extra=""){
   return `<section class="panel report-section"><div class="report-section-heading"><div><h2>${esc(title)}</h2>${description?`<p>${esc(description)}</p>`:""}</div><div class="report-section-actions">${extra}${reportExportButton(section)}</div></div>${content}</section>`;
 }
@@ -432,23 +473,24 @@ function reportEmptyVisual(title,description,kind="chart"){
   return `<div class="report-empty-visual">${art}<strong>${esc(title)}</strong><span>${esc(description)}</span></div>`;
 }
 function reportCsvCell(value){return `"${String(value??"").replaceAll('"','""')}"`;}
-function exportGeneralReport(section){
+function exportGeneralReport(section,format="csv"){
   const tickets=reportScopedTickets();
   let rows=[["Conversation ID","Customer","Channel","Agent","Status","Tag","Created"]];
-  if(section==="agent-supervisor")rows=[["Type","Total"],["Agent",state.agents.filter(agent=>agent.role==="Agent").length],["Supervisor",state.agents.filter(agent=>agent.role.toLowerCase().includes("supervisor")).length]];
+  if(section==="agent-supervisor")rows=[["Role","Handled conversations"],["Agent",tickets.filter(item=>state.agents.find(agent=>agent.name===item.agent)?.role==="Agent").length],["Supervisor",tickets.filter(item=>state.agents.find(agent=>agent.name===item.agent)?.role==="Supervisor").length]];
   else if(section==="online-status")rows=[["Status","Total"],["Online",state.agents.filter(agent=>agent.online).length],["Offline",state.agents.filter(agent=>!agent.online).length]];
   else if(section==="activity"){const resolved=tickets.filter(item=>["Selesai","Ditutup"].includes(item.status)).length;rows=[["Metric","Total"],["Total conversations",tickets.length],["Unassigned",tickets.filter(item=>!item.agent||item.status==="Belum ditugaskan").length],["Assigned",tickets.filter(item=>item.agent&&!["Selesai","Ditutup"].includes(item.status)).length],["Resolved",resolved],["Campaign",tickets.filter(item=>item.campaigns?.length).length]];}
-  else if(section==="tags"){const tags=tickets.reduce((all,item)=>{const tag=item.tag||"Untagged";all[tag]=(all[tag]||0)+1;return all;},{});rows=[["Tag","Conversations"],...Object.entries(tags)];}
+  else if(section==="tags"){const tags=tickets.reduce((all,item)=>{const tag=item.tag||"Untagged";all[tag]=(all[tag]||0)+1;return all;},{});rows=[["Tag","Conversations","Percent"],...Object.entries(tags).map(([tag,count])=>[tag,count,tickets.length?Number((count/tickets.length*100).toFixed(2)):0])];}
   else if(section==="monthly-active-users")rows=[["User ID"],...[...new Set(reportMonthlyTickets().map(item=>item.userId))].map(id=>[id])];
-  else if(section==="performance")rows=[["Metric","Value"],["Average first response time",reportFormatDuration(reportAverageFirstResponse(tickets))],["Average resolution time","00h 00m 00s"],["Average wait time","00h 00m 00s"],["Monthly active users",new Set(reportMonthlyTickets().map(item=>item.userId)).size]];
+  else if(section==="performance"){const value=reportOperationalMetrics(tickets);rows=[["Metric","Value"],["Average first response time",reportFormatDuration(value.frt)],["Average response time",reportFormatDuration(value.art)],["Average resolution time",reportFormatDuration(value.resolution)],["FRT SLA met (%)",value.frtCompliance??""],["Resolution SLA met (%)",value.resolutionCompliance??""],["Monthly active users",new Set(reportMonthlyTickets().map(item=>item.userId)).size]];}
   else if(section==="new-conversations"){
     if(reportInterval==="Hourly")rows=[["Hour","Conversations"],...Array.from({length:24},(_,hour)=>[String(hour).padStart(2,"0"),tickets.filter(item=>Number(new Intl.DateTimeFormat("en-US",{timeZone:reportTimezoneFilter,hour:"2-digit",hour12:false}).format(new Date(item.created)))===hour).length])];
     else{const days=tickets.reduce((all,item)=>{const day=reportDateKey(item.created);all[day]=(all[day]||0)+1;return all;},{});rows=[["Date","Conversations"],...Object.entries(days)];}
   }
   else rows=[rows[0],...tickets.map(item=>[item.id,item.name,item.channel,item.agent||"Unassigned",item.status,item.tag,reportDateKey(item.created)])];
   const csv=rows.map(row=>row.map(reportCsvCell).join(",")).join("\r\n");
-  const url=URL.createObjectURL(new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"}));
-  const link=document.createElement("a");link.href=url;link.download=`closepay-general-report-${section}-${reportDateFilter}.csv`;document.body.append(link);link.click();link.remove();URL.revokeObjectURL(url);
+  const blob=format==="xlsx"?CSXlsx.workbook(rows):new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"});
+  const url=URL.createObjectURL(blob);
+  const link=document.createElement("a");link.href=url;link.download=`closepay-general-report-${section}-${reportDateFilter}.${format}`;document.body.append(link);link.click();link.remove();URL.revokeObjectURL(url);
   toast("Report exported.");
 }
 function renderGeneralReport(){
@@ -457,8 +499,8 @@ function renderGeneralReport(){
   const assigned=tickets.filter(item=>item.agent&&!["Selesai","Ditutup"].includes(item.status)).length;
   const unassigned=tickets.filter(item=>!item.agent||item.status==="Belum ditugaskan").length;
   const campaign=tickets.filter(item=>item.campaigns?.length).length;
-  const agents=state.agents.filter(agent=>agent.role==="Agent").length;
-  const supervisors=state.agents.filter(agent=>agent.role.toLowerCase().includes("supervisor")).length;
+  const agents=tickets.filter(item=>state.agents.find(agent=>agent.name===item.agent)?.role==="Agent").length;
+  const supervisors=tickets.filter(item=>state.agents.find(agent=>agent.name===item.agent)?.role==="Supervisor").length;
   const online=state.agents.filter(agent=>agent.online).length,offline=state.agents.length-online;
   const userIds=[...new Set(monthly.map(item=>item.userId))];
   const matching=tickets.slice(0,2000).filter(item=>!reportConversationSearch||`${item.id} ${item.name} ${item.issue} ${item.channel} ${item.agent||""}`.toLowerCase().includes(reportConversationSearch.toLowerCase()));
@@ -469,20 +511,21 @@ function renderGeneralReport(){
   const timezones=[["Asia/Jakarta","(UTC+07:00) Asia/Jakarta"],["Asia/Makassar","(UTC+08:00) Asia/Makassar"],["Asia/Jayapura","(UTC+09:00) Asia/Jayapura"],["UTC","(UTC+00:00) UTC"]];
   const divisions=["All divisions",...new Set(state.tickets.map(item=>item.division||"Customer Service"))];
   const filters=`<div class="report-filters"><label><span class="sr-only">Timezone</span><select id="reportTimezone">${timezones.map(([value,label])=>`<option value="${value}" ${reportTimezoneFilter===value?"selected":""}>${label}</option>`).join("")}</select></label><label><span class="sr-only">Channel</span><select id="reportChannel"><option ${reportChannelFilter==="All channels"?"selected":""}>All channels</option>${["PSP Mobile","PSP Admin","Merchant"].map(channel=>`<option ${reportChannelFilter===channel?"selected":""}>${channel}</option>`).join("")}</select></label><label class="report-date-filter"><span class="sr-only">Report date</span><input id="reportDate" type="date" value="${esc(reportDateFilter)}" aria-label="Report date"><small>${reportDateFilter===todayKey?"Today":"Selected date"} (${dateLabel})</small></label><label><span class="sr-only">Division</span><select id="reportDivision">${divisions.map(division=>`<option ${reportDivisionFilter===division?"selected":""}>${esc(division)}</option>`).join("")}</select></label></div>`;
-  const performance=`<div class="report-kpi-grid">${[["Average first response time",reportFormatDuration(reportAverageFirstResponse(tickets))],["Average resolution time","00h 00m 00s"],["Average wait time","00h 00m 00s"],["Monthly active users",userIds.length]].map(([label,value])=>`<div><strong>${esc(value)}</strong><span>${esc(label)}</span></div>`).join("")}</div>`;
+  const operational=reportOperationalMetrics(tickets);
+  const performance=`<div class="report-kpi-grid">${[["Average first response time",reportFormatDuration(operational.frt)],["Average response time",reportFormatDuration(operational.art)],["Average resolution time",reportFormatDuration(operational.resolution)],["FRT SLA met",operational.frtCompliance===null?"—":operational.frtCompliance.toFixed(2)+"%"],["Resolution SLA met",operational.resolutionCompliance===null?"—":operational.resolutionCompliance.toFixed(2)+"%"],["Monthly active users",userIds.length]].map(([label,value])=>`<div><strong>${esc(value)}</strong><span>${esc(label)}</span></div>`).join("")}</div>`;
   const activity=`<div class="report-kpi-grid report-activity-kpis">${[["Total conversations",tickets.length],["Unassigned",unassigned],["Assigned",assigned],["Resolved",resolved],["Campaign",campaign]].map(([label,value])=>`<div><strong>${value}</strong><span>${label}</span></div>`).join("")}</div>`;
-  const staffTable=`<div class="report-staff-summary"><strong>${agents+supervisors}</strong><span>Total users</span><div class="report-staff-row"><i class="agent-dot"></i>Agent <b>${agents} users</b></div><div class="report-staff-row"><i class="supervisor-dot"></i>SPV <b>${supervisors} users</b></div></div>`;
-  const onlineTable=`<div class="report-staff-summary"><strong>${online+offline}</strong><span>Total users</span><div class="report-staff-row"><i class="online-dot"></i>Online <b>${online} users</b></div><div class="report-staff-row"><i class="offline-dot"></i>Offline <b>${offline} users</b></div></div>`;
-  const mau=monthly.length?`<div class="report-bar-chart">${Array.from({length:7},(_,index)=>{const date=new Date(`${reportDateFilter}T12:00:00`);date.setDate(date.getDate()-6+index);const key=reportDateKey(date);const count=monthly.filter(item=>reportDateKey(item.created)===key).length;return `<div><i style="height:${Math.max(8,count*26)}px" title="${count} active users"></i><span>${key.slice(-2)}</span></div>`;}).join("")}</div>`:reportEmptyVisual("No data yet","Try to change your filter to show the data.");
+  const staffTable=`<div class="report-staff-summary"><strong>${agents+supervisors}</strong><span>Handled conversations</span><div class="report-staff-row"><i class="agent-dot"></i>Agent <b>${agents} chats</b></div><div class="report-staff-row"><i class="supervisor-dot"></i>SPV <b>${supervisors} chats</b></div></div>`;
+  const onlineTable=`<div class="report-staff-summary"><strong>${online+offline}</strong><span>Total users</span><div class="report-staff-row"><i class="online-dot"></i>Online <b>${online} users</b></div><div class="report-staff-row"><i class="offline-dot"></i>Offline <b>${offline} users</b></div>${state.agents.map(agent=>{const time=reportAgentAvailability(agent);return `<div class="report-staff-row"><span>${esc(agent.name)}</span><b>${Math.round(time.online/3600000)}h online · ${Math.round(time.offline/3600000)}h offline / ${Math.round(time.shift/3600000)}h shift</b></div>`;}).join("")}</div>`;
+  const mau=state.tickets.length?`<div class="report-bar-chart">${Array.from({length:12},(_,index)=>{const date=new Date(`${reportDateFilter}T12:00:00`);date.setMonth(date.getMonth()-11+index);const key=[date.getFullYear(),String(date.getMonth()+1).padStart(2,"0")].join("-");const count=new Set(state.tickets.filter(item=>reportDateKey(item.created).slice(0,7)===key).map(item=>item.userId)).size;return `<div><i style="height:${Math.max(8,count*26)}px" title="${count} unique customers"></i><span>${key.slice(5)}</span></div>`;}).join("")}</div>`:reportEmptyVisual("No data yet","Try to change your filter to show the data.");
   const tags=Object.entries(tickets.reduce((all,item)=>{const tag=item.tag||"Untagged";all[tag]=(all[tag]||0)+1;return all;},{}));
-  const tagContent=tags.length?`<div class="report-tag-list">${tags.map(([tag,count])=>`<div><span>${esc(tag)}</span><b>${count}</b><i style="width:${Math.max(8,count/tickets.length*100)}%"></i></div>`).join("")}</div>`:reportEmptyVisual("No data yet","Try to change your filter to show the data.");
+  const tagContent=tags.length?`<div class="report-tag-list">${tags.map(([tag,count])=>`<div><span>${esc(tag)}</span><b>${count} · ${(count/tickets.length*100).toFixed(1)}%</b><i style="width:${Math.max(8,count/tickets.length*100)}%"></i></div>`).join("")}</div>`:reportEmptyVisual("No data yet","Try to change your filter to show the data.");
   const conversationRows=visible.map(item=>`<tr><td>${esc(new Date(item.created).toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"}))}</td><td><button class="link-button" data-open-ticket="${esc(item.id)}">${esc(item.id)}</button></td><td>${esc(item.name)}</td><td>${esc(item.channel)}</td><td>${esc(item.agent||"Unassigned")}</td><td>${esc(item.status)}</td><td>${esc(item.tag)}</td></tr>`).join("");
   const conversationTable=visible.length?`<div class="table-wrap"><table class="report-conversation-table"><thead><tr><th>Date</th><th>Conversation</th><th>Customer</th><th>Channel</th><th>Agent</th><th>Status</th><th>Tag</th></tr></thead><tbody>${conversationRows}</tbody></table></div>`:reportEmptyVisual("No data yet","Your list of data will appear here.","folder");
   const pagination=`<div class="report-pagination"><label>Rows per page <select id="reportRowsPerPage">${[10,25,50].map(count=>`<option value="${count}" ${reportRowsPerPage===count?"selected":""}>${count}</option>`).join("")}</select></label><span>Showing ${matching.length?start+1:0} - ${Math.min(start+reportRowsPerPage,matching.length)} of ${matching.length}</span><div><span>${reportListPage} of ${pages} page${pages===1?"":"s"}</span><button type="button" data-action="report-page-back" aria-label="Previous page" ${reportListPage<=1?"disabled":""}>‹</button><button type="button" data-action="report-page-forward" aria-label="Next page" ${reportListPage>=pages?"disabled":""}>›</button></div></div>`;
   const periodData=reportInterval==="Hourly"?Array.from({length:24},(_,hour)=>({label:String(hour).padStart(2,"0"),value:tickets.filter(item=>Number(new Intl.DateTimeFormat("en-US",{timeZone:reportTimezoneFilter,hour:"2-digit",hour12:false}).format(new Date(item.created)))===hour).length})):tickets.reduce((all,item)=>{const day=reportDateKey(item.created);all[day]=(all[day]||0)+1;return all;},{});
   const periodEntries=Array.isArray(periodData)?periodData:Object.entries(periodData).map(([label,value])=>({label:label.slice(-2),value}));
   const periodChart=tickets.length?`<div class="report-period-chart">${periodEntries.map(item=>`<div title="${item.label}: ${item.value}"><i style="height:${Math.max(3,item.value*22)}px"></i><span>${item.label}</span></div>`).join("")}</div>`:reportEmptyVisual("No data yet","Try to change your filter to show the data.");
-  return `<div class="report-dashboard"><h1>General</h1>${filters}
+  return `<div class="report-dashboard"><h1>General</h1>${filters}<div class="report-filters"><label>Dari tanggal<input id="reportFrom" type="date" value="${esc(reportFrom)}"></label><label>Sampai tanggal<input id="reportTo" type="date" value="${esc(reportTo)}"></label><label>Agent<select id="reportAgent"><option>All agents</option>${state.agents.map(agent=>`<option ${reportAgentFilter===agent.name?"selected":""}>${esc(agent.name)}</option>`).join("")}</select></label><button type="button" data-action="report-clear-dates">Semua tanggal</button></div>
     ${reportSection("Performance overview","","performance",performance)}
     ${reportSection("Conversation activity overview","Shows a summary of conversation activity during the selected filter period, which are total conversations, unassigned, assigned, resolved, and campaign.","activity",activity)}
     <div class="report-two-column">${reportSection("Agent vs supervisor","Number of agents and supervisors.","agent-supervisor",staffTable)}${reportSection("Agent online status","","online-status",onlineTable)}</div>
@@ -502,10 +545,12 @@ function renderReportPerformance(){
 }
 function surveyReportResponses(type){
   return state.tickets.flatMap(ticket=>{
+    const modern=(ticket.surveys||[]).filter(item=>item.type===type&&item.status==="answered");
+    if(modern.length)return modern.map(item=>({respondent:ticket.name,accountId:ticket.userId,responseAt:item.answeredAt,channel:ticket.channel,agent:ticket.agent||"—",comment:item.comment||"",score:Number(item.score),ticketId:ticket.id}));
     const legacy=type==="csat"&&Number(ticket.rating)>0?{score:ticket.rating,comment:ticket.csatComment||"",responseAt:ticket.csatResponseAt||ticket.created}:null;
     const stored=ticket.surveyResponses?.[type]||legacy;
     if(!stored||stored.score===null||stored.score===undefined||stored.score==="")return [];
-    const score=Number(stored.score),max=type==="nps"?10:5,min=type==="nps"?0:1;
+    const score=Number(stored.score),max=type==="nps"?10:type==="ces"?7:5,min=type==="nps"?0:1;
     if(!Number.isFinite(score)||score<min||score>max)return [];
     return [{respondent:stored.respondent||ticket.name,accountId:stored.accountId||ticket.userId,responseAt:stored.responseAt||ticket.created,channel:stored.channel||ticket.channel,agent:stored.agent||ticket.agent||"—",comment:stored.comment||"",score,ticketId:ticket.id}];
   }).filter(item=>{
@@ -515,6 +560,10 @@ function surveyReportResponses(type){
     if(surveyReportPeriod==="30d"&&date.getTime()<now-30*86400000)return false;
     return (surveyReportChannel==="all"||item.channel===surveyReportChannel)&&(!surveyReportDay||reportDateKey(item.responseAt,"Asia/Jakarta")===surveyReportDay)&&(type==="nps"||surveyReportAgent==="all"||item.agent===surveyReportAgent);
   }).sort((a,b)=>new Date(b.responseAt)-new Date(a.responseAt));
+}
+function surveyReportSummary(type){
+ const sent=state.tickets.flatMap(ticket=>(ticket.surveys||[]).filter(item=>item.type===type).map(item=>({ticket,item}))).filter(({ticket,item})=>{const date=new Date(item.sentAt),now=Date.now();return (surveyReportPeriod==="all"||date.getTime()>=now-(surveyReportPeriod==="7d"?7:30)*86400000)&&(surveyReportChannel==="all"||ticket.channel===surveyReportChannel)&&(!surveyReportDay||reportDateKey(item.sentAt,"Asia/Jakarta")===surveyReportDay)&&(surveyReportAgent==="all"||ticket.agent===surveyReportAgent);});
+ return CSEngine.surveyScores(sent.map(({item})=>item));
 }
 function surveyReportFilters(type){
   const channels=[...new Set(state.tickets.map(item=>item.channel))],agents=[...new Set(state.agents.map(item=>item.name))];
@@ -536,26 +585,31 @@ function surveyReportTable(type,rows){
 }
 function renderReportCsat(){
   const rows=surveyReportResponses("csat"),average=rows.length?(rows.reduce((sum,item)=>sum+item.score,0)/rows.length).toFixed(1):"—";
+  const summary=surveyReportSummary("csat");
   const labels=state.settings.customerSurvey.types.csat.answers.map((answer,index)=>answer.label||`Skor ${index+1}`);
   const breakdown=surveyReportBreakdown(labels.map((label,index)=>({label:`${index+1} · ${label}`,count:rows.filter(item=>item.score===index+1).length})));
-  return surveyReportOverview("CSAT","Customer Satisfaction Score",surveyReportFilters("csat")+reportMetrics([["CSAT Responses",rows.length,"Respons masuk"],["Average Score",average,"Skala 1–5"]])+surveyReportSection("CSAT Breakdown",breakdown)+surveyReportSection("CSAT Responses",surveyReportTable("csat",rows),"Tanggal respons lama mengikuti tanggal percakapan."));
+  return surveyReportOverview("CSAT","Customer Satisfaction Score",surveyReportFilters("csat")+reportMetrics([["Response Rate",summary.responseRate===null?"—":summary.responseRate+"%",`${summary.answered} / ${summary.sent} survei`],["CSAT Score",summary.csat===null?"—":summary.csat+"%","Skor 4–5 / respons"],["Skor 1–3",summary.csatLow===null?"—":summary.csatLow+"%","Breakdown skor rendah"],["Average Score",average,"Skala 1–5"]])+surveyReportSection("CSAT Breakdown",breakdown)+surveyReportSection("CSAT Responses",surveyReportTable("csat",rows),"Tanggal respons lama mengikuti tanggal percakapan."));
 }
 function renderReportCes(){
   const rows=surveyReportResponses("ces"),average=rows.length?(rows.reduce((sum,item)=>sum+item.score,0)/rows.length).toFixed(1):"—";
-  const groups=[["Difficult",score=>score<=2],["Neutral",score=>score===3],["Easy",score=>score>=4]];
-  return surveyReportOverview("CES","Customer Effort Score",surveyReportFilters("ces")+surveyReportSection("CES Rating",`<div class="survey-report-rating"><div class="survey-report-average"><span>Average</span><strong>${average}</strong><small>Skala 1–5 · ${rows.length} respons</small></div>${groups.map(([label,match])=>`<div class="survey-report-rating-group"><span>${label}</span><strong>${rows.filter(item=>match(item.score)).length}</strong><small>${rows.length?Math.round(rows.filter(item=>match(item.score)).length/rows.length*100):0}% respons</small></div>`).join("")}</div>`)+surveyReportSection("CES Responses",surveyReportTable("ces",rows)));
+  const summary=surveyReportSummary("ces");
+  const groups=[["Difficult",score=>score<=3],["Neutral",score=>score===4],["Easy",score=>score>=5]];
+  return surveyReportOverview("CES","Customer Effort Score",surveyReportFilters("ces")+reportMetrics([["Response Rate",summary.responseRate===null?"—":summary.responseRate+"%",`${summary.answered} / ${summary.sent} survei`],["CES Mean",summary.ces===null?"—":summary.ces,"Skala 1–7"]])+surveyReportSection("CES Rating",`<div class="survey-report-rating"><div class="survey-report-average"><span>Average</span><strong>${average}</strong><small>Skala 1–7 · ${rows.length} respons</small></div>${groups.map(([label,match])=>`<div class="survey-report-rating-group"><span>${label}</span><strong>${rows.filter(item=>match(item.score)).length}</strong><small>${rows.length?Math.round(rows.filter(item=>match(item.score)).length/rows.length*100):0}% respons</small></div>`).join("")}</div>`)+surveyReportSection("CES Responses",surveyReportTable("ces",rows)));
 }
 function renderReportNps(){
   const rows=surveyReportResponses("nps"),promoters=rows.filter(item=>item.score>=9).length,passives=rows.filter(item=>item.score>=7&&item.score<=8).length,detractors=rows.filter(item=>item.score<=6).length;
+  const summary=surveyReportSummary("nps");
   const overall=rows.length?Math.round((promoters-detractors)/rows.length*100):"—";
-  return surveyReportOverview("NPS","Net Promoter Score",surveyReportFilters("nps")+surveyReportSection("Overall NPS",`<div class="survey-report-overall"><strong>${overall}</strong><span>${rows.length?"Skor dari −100 hingga +100":"Belum ada respons"}</span><small>${rows.length} respons masuk</small></div>`)+surveyReportSection("NPS Breakdown",surveyReportBreakdown([{label:"Promoters · 9–10",count:promoters},{label:"Passives · 7–8",count:passives},{label:"Detractors · 0–6",count:detractors}]))+surveyReportSection("NPS Responses",surveyReportTable("nps",rows)));
+  return surveyReportOverview("NPS","Net Promoter Score",surveyReportFilters("nps")+reportMetrics([["Response Rate",summary.responseRate===null?"—":summary.responseRate+"%",`${summary.answered} / ${summary.sent} survei`],["NPS",summary.nps===null?"—":summary.nps,"Promoters − detractors"]])+surveyReportSection("Overall NPS",`<div class="survey-report-overall"><strong>${overall}</strong><span>${rows.length?"Skor dari −100 hingga +100":"Belum ada respons"}</span><small>${rows.length} respons masuk</small></div>`)+surveyReportSection("NPS Breakdown",surveyReportBreakdown([{label:"Promoters · 9–10",count:promoters},{label:"Passives · 7–8",count:passives},{label:"Detractors · 0–6",count:detractors}]))+surveyReportSection("NPS Responses",surveyReportTable("nps",rows)));
 }
 function renderSettings(){
   const s=state.settings;
-  const tabs=`<div class="settings-tabs" role="tablist" aria-label="Pengaturan Inbox">${["Auto Responder","Office Hours","Template","Tags","Customer Idle"].map(name=>`<button role="tab" aria-selected="${settingsTab===name}" class="${settingsTab===name?"active":""}" data-settings-tab="${name}">${name}</button>`).join("")}</div>`;
+  const tabs=`<div class="settings-tabs" role="tablist" aria-label="Pengaturan Inbox">${["Auto Responder","Office Hours","Routing & SLA","Template","Tags","Customer Idle"].map(name=>`<button role="tab" aria-selected="${settingsTab===name}" class="${settingsTab===name?"active":""}" data-settings-tab="${name}">${name}</button>`).join("")}</div>`;
   const days=[["1","Senin"],["2","Selasa"],["3","Rabu"],["4","Kamis"],["5","Jumat"],["6","Sabtu"],["0","Minggu"]];
   return `${header("KONTROL","Pengaturan · Inbox","Pilih tab untuk mengatur layanan Inbox.")}${tabs}<div class="settings-stack">
-  <section class="panel settings-section" ${settingsTab==="Auto Responder"?"":"hidden"}><h2>Auto Responder</h2><p>Tulis balasan otomatis untuk dua kondisi waktu.</p><form id="autoResponderForm" class="responder-grid"><label class="responder-column">Auto responder template during office hours<textarea name="greeting" required>${esc(s.greeting)}</textarea></label><label class="responder-column">Auto Responder template outside of office hours<textarea name="afterHours" required>${esc(s.afterHours)}</textarea></label><button class="button primary" type="submit">Simpan Auto Responder</button></form></section>
+  <section class="panel settings-section" ${settingsTab==="Routing & SLA"?"":"hidden"}><h2>Routing & SLA</h2><form id="routingSlaForm" class="settings-form-grid"><label>Metode distribusi<select name="routingMethod"><option value="manual" ${s.routingMethod==="manual"?"selected":""}>Manual</option><option value="round-robin" ${s.routingMethod==="round-robin"?"selected":""}>Round Robin</option><option value="least-active" ${s.routingMethod==="least-active"?"selected":""}>Least Active</option></select></label><label>Maksimum chat aktif per agen<input name="maxOngoingChats" type="number" min="1" max="100" value="${esc(s.maxOngoingChats)}" required></label><label>Target FRT (menit)<input name="frtMinutes" type="number" min="1" value="${esc(s.frtMinutes)}" required></label><label>Target resolusi (menit)<input name="resolutionMinutes" type="number" min="1" value="${esc(s.resolutionMinutes)}" required></label><label><input name="pausePendingSla" type="checkbox" ${s.pausePendingSla?"checked":""}> Jeda SLA saat Pending</label><button class="button primary" type="submit">Simpan Routing & SLA</button></form><p>Antrean diproses FIFO pada jam kerja saat agen online dan kapasitas tersedia.</p></section>
+  <section class="panel settings-section" ${settingsTab==="Office Hours"?"":"hidden"}><h2>Hari libur</h2><div>${s.holidays.map((item,index)=>`<div class="holiday-row"><strong>${esc(item.start)} – ${esc(item.end)}</strong> · ${esc(item.description)} <button type="button" data-action="delete-holiday" data-index="${index}">Hapus</button></div>`).join("")||"Belum ada hari libur."}</div><form id="holidayForm" class="settings-form-grid"><label>Mulai<input name="start" type="date" required></label><label>Sampai<input name="end" type="date" required></label><label>Deskripsi<input name="description" maxlength="100" required></label><button class="button primary" type="submit">Tambah hari libur</button></form></section>
+  <section class="panel settings-section" ${settingsTab==="Auto Responder"?"":"hidden"}><h2>Auto Responder</h2><p>Balasan sesuai ketersediaan layanan.</p><form id="autoResponderForm" class="responder-grid"><label class="responder-column">Greeting · jam kerja dan agen tersedia<textarea name="greeting" required>${esc(s.greeting)}</textarea></label><label class="responder-column">Away / Busy · jam kerja tanpa agen online<textarea name="busyReply" required>${esc(s.busyReply)}</textarea></label><label class="responder-column">Out of Office · luar jam kerja<textarea name="afterHours" required>${esc(s.afterHours)}</textarea></label><button class="button primary" type="submit">Simpan Auto Responder</button></form></section>
   <section class="panel settings-section" ${settingsTab==="Office Hours"?"":"hidden"}><h2>Office Hours</h2><form id="officeHoursForm"><label class="timezone-field">Set Geolocation<select name="timezone"><option value="Asia/Jakarta" ${s.timezone==="Asia/Jakarta"?"selected":""}>Jakarta · WIB (UTC+7)</option><option value="Asia/Makassar" ${s.timezone==="Asia/Makassar"?"selected":""}>Makassar · WITA (UTC+8)</option><option value="Asia/Jayapura" ${s.timezone==="Asia/Jayapura"?"selected":""}>Jayapura · WIT (UTC+9)</option></select></label><div class="table-wrap"><table class="office-hours-table"><thead><tr><th>DAY</th><th>TIME IN</th><th>TIME OUT</th></tr></thead><tbody>${days.map(([id,name])=>{const row=s.officeHours[id];return `<tr><td><label class="day-switch"><input type="checkbox" name="day_${id}_enabled" ${row.enabled?"checked":""}> ${name}</label></td><td><input type="time" name="day_${id}_in" value="${esc(row.in)}" required></td><td><input type="time" name="day_${id}_out" value="${esc(row.out)}" required></td></tr>`;}).join("")}</tbody></table></div><div class="office-holiday"><label>Tanggal merah berikutnya<input type="date" name="holiday" value="${esc(s.holiday)}"></label><label>Pesan tanggal merah<textarea name="holidayReply">${esc(s.holidayReply)}</textarea></label></div><button class="button primary" type="submit">Simpan Office Hours</button></form></section>
   <section class="panel settings-section" ${settingsTab==="Template"?"":"hidden"}><h2>Template</h2><div class="table-wrap"><table><thead><tr><th>TEMPLATE COMMAND</th><th>TEMPLATE CONTENT</th></tr></thead><tbody>${state.templates.map(t=>`<tr><td><code>${esc(t.command)}</code></td><td class="wrap-cell">${esc(t.text)}</td></tr>`).join("")}</tbody></table></div><form id="templateForm" class="settings-add-form"><label>Template command<input name="command" required maxlength="24" placeholder="/contoh"></label><label>Template content<textarea name="content" required placeholder="Isi balasan; gunakan {nama} bila perlu"></textarea></label><button class="button primary" type="submit">Add Template</button></form></section>
   <section class="panel settings-section" ${settingsTab==="Tags"?"":"hidden"}><h2>Tags</h2><div class="table-wrap"><table><thead><tr><th>TABLE TAGS</th></tr></thead><tbody>${state.tags.map(tag=>`<tr><td>${esc(tag)}</td></tr>`).join("")}</tbody></table></div><form id="tagForm" class="settings-add-form compact"><label>Nama tag<input name="tag" required maxlength="40" placeholder="Tag baru"></label><button class="button primary" type="submit">Add</button></form></section>
@@ -575,6 +629,12 @@ function renderUserHistoryItem(item){
   const visibleMessages=item.messages.filter(message=>!message.text?.startsWith("[Internal] "));
   return `<details class="user-history-card"><summary><span><strong>${esc(item.issue)}</strong><small>${esc(item.id)} · ${esc(item.agent||"Layanan pelanggan")}</small></span><span class="user-history-rating">${item.rating?`<b aria-label="${item.rating} dari 5 bintang">${"★".repeat(item.rating)}${"☆".repeat(5-item.rating)}</b>`:'<em>Belum ada bintang</em>'}<small>Lihat log chat ⌄</small></span></summary><div class="user-history-body"><div class="user-history-log">${visibleMessages.map(message=>`<div class="user-history-line ${message.type==="customer"?"from-user":""}"><b>${message.type==="customer"?"Anda":esc(message.by)}</b><small>${esc(message.at)}</small><p>${esc(message.text)}${attachmentMarkup(message)}</p></div>`).join("")}</div>${item.csatComment?`<p class="user-history-comment">Komentar Anda: ${esc(item.csatComment)}</p>`:""}${!item.rating?`<form class="user-rating-form"><input type="hidden" name="ticketId" value="${esc(item.id)}"><fieldset><legend>Beri nilai layanan</legend><div class="user-star-picker">${[1,2,3,4,5].map(score=>`<label><input type="radio" name="rating" value="${score}" required><span aria-label="${score} bintang">★</span></label>`).join("")}</div></fieldset><label>Komentar (opsional)<textarea name="comment" maxlength="500" placeholder="Ceritakan pengalaman Anda"></textarea></label><button type="submit">Kirim penilaian</button></form>`:""}</div></details>`;
 }
+function renderUserSurveyForms(room){
+ return (room.surveys||[]).filter(item=>item.status==="sent"&&new Date(item.expiresAt)>=new Date()).map(item=>{
+  const range=item.type==="nps"?[0,10]:item.type==="ces"?[1,7]:[1,5];
+  return `<form id="userSurveyForm" class="user-rating-form"><input type="hidden" name="ticketId" value="${esc(room.id)}"><input type="hidden" name="type" value="${item.type}"><strong>${item.type.toUpperCase()}</strong><p>${esc(item.question)}</p><label>Skor ${range[0]}–${range[1]}<select name="score" required><option value="">Pilih skor</option>${Array.from({length:range[1]-range[0]+1},(_,index)=>`<option value="${index+range[0]}">${index+range[0]}</option>`).join("")}</select></label><label>Komentar (opsional)<textarea name="comment" maxlength="500"></textarea></label><button type="submit">Kirim survei</button></form>`;
+ }).join("");
+}
 function renderUserIntake(){
  if(userIntakeMode==="guest")return `<form id="guestChatForm" class="user-intake-form"><h2>Chat dari luar aplikasi</h2><p>Isi detail berikut agar tim kami dapat membantu.</p><label>Nama orang tua<input name="parentName" maxlength="100" required placeholder="Nama orang tua"></label><label>Nama sekolah<input name="schoolName" maxlength="120" required placeholder="Nama sekolah"></label><label>Kendala yang dihadapi<textarea name="issue" maxlength="1000" required placeholder="Ceritakan kendala Anda"></textarea></label><button type="submit">Kirim dan mulai chat</button></form>`;
  const issues=["Saldo/top up belum masuk","Bukti pembayaran belum tampil","Akses akun bermasalah","Kendala aplikasi","Pertanyaan lainnya"];
@@ -592,7 +652,7 @@ function renderUserPreview(){
     <div class="user-phone"><div class="user-phone-speaker" aria-hidden="true"></div><div class="user-phone-screen"><div class="user-phone-status"><span>9:41</span><span>●●● ▰</span></div><header class="user-phone-header"><span class="user-phone-logo">${appLogo("Closepay")}</span><div><strong>Closepay</strong><small>Layanan pelanggan</small></div><span class="user-phone-online" aria-label="Layanan tersedia"></span></header>
     <div class="user-phone-tabs" role="tablist" aria-label="Tampilan pelanggan"><button type="button" role="tab" data-user-tab="chat" aria-selected="${userPreviewTab==="chat"}" class="${userPreviewTab==="chat"?"active":""}">Chat</button><button type="button" role="tab" data-user-tab="rating" aria-selected="${userPreviewTab==="rating"}" class="${userPreviewTab==="rating"?"active":""}">Chat sebelumnya</button></div>
     ${userPreviewTab==="chat"?`<div class="user-chat-panel"><div class="user-entry-modes"><button type="button" data-user-mode="login" class="${userIntakeOpen&&userIntakeMode==="login"?"active":""}">Sudah login</button><button type="button" data-user-mode="guest" class="${userIntakeOpen&&userIntakeMode==="guest"?"active":""}">Dari luar aplikasi</button></div>${userIntakeOpen?`<div class="user-intake-panel">${renderUserIntake()}<button type="button" class="user-intake-back" data-action="cancel-user-intake">← Kembali ke chat</button></div>`:`<div class="user-chat-context"><strong>${esc(current.issue)}</strong><small>${esc(current.id)} · ${esc(current.status)}</small></div><div class="user-message-list" id="userMessageList">${messages}</div>${closed?`<div class="user-chat-closed">Percakapan selesai. Lihat Chat sebelumnya untuk memberi penilaian.</div>`:`<form id="userChatForm" class="user-chat-compose"><label class="user-file-button" title="Lampirkan file" aria-label="Lampirkan file">📎<input name="file" type="file" accept="image/*,.pdf,.txt" aria-label="Pilih file gambar, PDF, atau TXT"></label><textarea name="message" rows="1" maxlength="4000" placeholder="Tulis pesan..." aria-label="Pesan pelanggan"></textarea><button type="submit" aria-label="Kirim pesan">➤</button><div class="user-file-name" id="userFileName" hidden></div></form>`}`}</div>`:
-    `<div class="user-rating-panel"><h2>Chat sebelumnya</h2>${history.length?history.map(renderUserHistoryItem).join(""):'<p class="user-history-empty">Belum ada chat sebelumnya yang selesai.</p>'}</div>`}
+    `<div class="user-rating-panel"><h2>Chat sebelumnya</h2>${history.length?history.map(item=>renderUserHistoryItem(item)+renderUserSurveyForms(item)).join(""):'<p class="user-history-empty">Belum ada chat sebelumnya yang selesai.</p>'}</div>`}
     <div class="user-phone-home" aria-hidden="true"><span></span></div></div></div></div>`;
 }
 function readChatFile(file){
@@ -634,6 +694,8 @@ function render(){
  const detailScroll=main.querySelector?.(".ticket-details")?.scrollTop||0;
  const inboxScroll=main.querySelector?.(".inbox-sidebar")?.scrollTop||0;
   main.innerHTML=({dashboard:renderDashboard,"dashboard-sla":renderSlaOverview,tickets:renderTickets,"user-preview":renderUserPreview,transfers:renderTransfers,templates:renderTemplates,settings:renderSettings,"account-users":renderAccountUsers,"account-roles":renderAccountRoles,"settings-sla":renderSlaSettings,"settings-agents":renderAgentManagement,"settings-integration":renderIntegrationSettings,"settings-user-performance":renderUserPerformance,"settings-customer-survey":renderCustomerSurvey,"settings-scorecard":renderScorecard,"report-general":renderGeneralReport,"report-sla":renderReportSla,"report-quality":renderReportQuality,"report-performance":renderReportPerformance,"report-csat":renderReportCsat,"report-ces":renderReportCes,"report-nps":renderReportNps}[page]||renderTickets)()+modal();
+ if(page==="settings-customer-survey")main.querySelector(".survey-sending")?.insertAdjacentHTML("beforeend",`<label class="survey-field-label">Survei kedaluwarsa setelah (jam)<input name="expiryHours" type="number" min="1" max="720" value="${esc(state.settings.customerSurvey.expiryHours||24)}" required></label>`);
+ if(page==="user-preview"&&userPreviewTab==="chat"&&["Selesai","Ditutup"].includes(state.tickets.find(room=>room.id===userPreviewTicketId)?.status))main.querySelector(".user-chat-closed")?.insertAdjacentHTML("afterend",`<form id="userChatForm" class="user-chat-compose"><label class="user-file-button" title="Lampirkan file">📎<input name="file" type="file" accept="image/*,.pdf,.txt" aria-label="Pilih file"></label><textarea name="message" rows="1" maxlength="4000" placeholder="Balas untuk buka kembali..." aria-label="Pesan pelanggan"></textarea><button type="submit" aria-label="Kirim pesan">➤</button><div class="user-file-name" id="userFileName" hidden></div></form>`);
  const newList=main.querySelector?.(".ticket-items");if(newList)newList.scrollTop=listScroll;
  const newDetails=main.querySelector?.(".ticket-details");if(newDetails)newDetails.scrollTop=detailScroll;
  const newInbox=main.querySelector?.(".inbox-sidebar");if(newInbox)newInbox.scrollTop=inboxScroll;
@@ -654,12 +716,7 @@ function render(){
  const userList=document.getElementById("userMessageList");if(userList)userList.scrollTop=userList.scrollHeight;
 }
 function assignAgent(){
-  const pool=state.agents.filter(a=>a.online&&a.role==="Agent");
-  if(!pool.length)return null;
-  const count=a=>state.tickets.filter(t=>t.agent===a.name&&!["Selesai","Ditutup"].includes(t.status)).length;
-  const fewest=Math.min(...pool.map(count));
-  const choices=pool.filter(a=>count(a)===fewest);
-  return choices[Math.floor(Math.random()*choices.length)].name;
+  return CSEngine.businessState(new Date(),state.settings).open?CSEngine.chooseAgent(state.tickets,state.agents,state.settings)?.name||null:null;
 }
 function updateOverdue(){
   let changed=false;
@@ -674,25 +731,24 @@ function updateOverdue(){
   if(changed)save();
 }
 function autoReply(){
-  const s=state.settings,local=new Date(new Date().toLocaleString("en-US",{timeZone:s.timezone}));
-  const date=[local.getFullYear(),String(local.getMonth()+1).padStart(2,"0"),String(local.getDate()).padStart(2,"0")].join("-");
-  if(date===s.holiday)return s.holidayReply;
-  const hours=s.officeHours[String(local.getDay())];
-  const time=String(local.getHours()).padStart(2,"0")+":"+String(local.getMinutes()).padStart(2,"0");
-  const during=hours?.enabled && time>=hours.in && time<hours.out;
-  return during?s.greeting:s.afterHours;
+  const s=state.settings,period=CSEngine.businessState(new Date(),s);
+  if(period.reason==="holiday")return s.holidayReply||s.afterHours;
+  if(!period.open)return s.afterHours;
+  return state.agents.some(agent=>agent.online&&["Agent","Supervisor"].includes(agent.role)&&state.tickets.filter(room=>room.agent===agent.name&&!['Selesai','Ditutup','Belum ditugaskan'].includes(room.status)).length<s.maxOngoingChats)?s.greeting:s.busyReply;
 }
 function receiveIncoming(data){
   if(!data || !data.userId || !data.name || !data.text)return false;
   const channel=["PSP Mobile","PSP Admin","Merchant"].includes(data.channel)?data.channel:"PSP Mobile";
-  const existing=data.newRoom?null:state.tickets.find(t=>t.userId===String(data.userId)&&t.channel===channel&&!["Selesai","Ditutup"].includes(t.status));
+  const existing=data.newRoom?null:state.tickets.find(t=>t.userId===String(data.userId)&&t.channel===channel);
   if(existing){
     const previousAgent=existing.agent;
+    const reopened=["Selesai","Ditutup"].includes(existing.status);
+    if(reopened){existing.resolvedAt=null;existing.firstAgentResponseAt=null;existing.created=new Date().toISOString();existing.rating=0;existing.csat=null;existing.agent=CSEngine.businessState(new Date(),state.settings).open?CSEngine.chooseAgent(state.tickets,state.agents,state.settings,previousAgent)?.name||null:null;existing.status=existing.agent?"Sedang ditangani":"Belum ditugaskan";log(existing,"Percakapan dibuka kembali oleh pelanggan.");}
     existing.messages.push({by:"Pelanggan",text:String(data.text),at:nowWib(),sentAt:new Date().toISOString(),type:"customer",delivery:"sent"});
     if(page==="tickets"&&selected===existing.id)markRoomRead(existing,"customer");
     if(page!=="tickets"||selected!==existing.id)existing.unread=(existing.unread||0)+1;
     const owner=state.agents.find(a=>a.name===existing.agent);
-    if(!owner?.online){
+    if(!owner?.online&&!reopened){
       const previous=existing.agent||"Belum ditugaskan";
       existing.agent=assignAgent();
       existing.status=existing.agent?"Sedang ditangani":"Belum ditugaskan";
@@ -716,7 +772,7 @@ function receiveIncoming(data){
     state.tickets.unshift(fresh);
     if(agent===state.agents[0].name)addNotification("chat","Chat baru ditugaskan",fresh.name+" · "+channel,fresh.id);
   }
-  save();render();return true;
+  routeQueued();save();render();return true;
 }
 function startUserChat(data){
  if(!receiveIncoming({...data,newRoom:true}))return false;
@@ -765,7 +821,7 @@ document.addEventListener("click",e=>{
   if(notificationPanelOpen&&!e.target.closest(".notification-wrap")){notificationPanelOpen=false;updateNotificationUI();}
    const surveyAccordion=e.target.closest("[data-survey-accordion]");if(surveyAccordion){surveyExpanded=surveyExpanded===surveyAccordion.dataset.surveyAccordion?"":surveyAccordion.dataset.surveyAccordion;document.querySelectorAll("[data-survey-type]").forEach(section=>{const opened=section.dataset.surveyType===surveyExpanded;section.querySelector(".survey-type-content").hidden=!opened;const button=section.querySelector("[data-survey-accordion]");button.setAttribute("aria-expanded",String(opened));button.querySelector("span:last-child").textContent=opened?"⌄":"›";});updateCustomerSurveyUI();return;}
  const settingsGroup=e.target.closest("[data-settings-group]");if(settingsGroup){const child=document.getElementById(settingsGroup.getAttribute("aria-controls"));const expanded=settingsGroup.getAttribute("aria-expanded")==="true";child.hidden=expanded;settingsGroup.setAttribute("aria-expanded",String(!expanded));return;}
- const p=e.target.closest("[data-page]");if(p){e.preventDefault();page=p.dataset.page;showModal=false;if(window.matchMedia?.("(max-width: 700px)")?.matches)document.body.classList.add("sidebar-collapsed");syncSidebar();render();return;}
+ const p=e.target.closest("[data-page]");if(p){e.preventDefault();const next=p.dataset.page;if(state.sessionRole==="Agent"&&(next.startsWith("settings")||next.startsWith("account")||next.startsWith("report"))){toast("Hanya Admin atau Supervisor yang dapat membuka halaman ini.");return;}if(state.sessionRole==="Supervisor"&&(next.startsWith("settings")||next.startsWith("account"))){toast("Pengaturan hanya untuk Admin.");return;}page=next;showModal=false;if(window.matchMedia?.("(max-width: 700px)")?.matches)document.body.classList.add("sidebar-collapsed");syncSidebar();render();return;}
  const settingsLink=e.target.closest("[data-settings-tab]");if(settingsLink){settingsTab=settingsLink.dataset.settingsTab;render();return;}
  const interval=e.target.closest("[data-report-interval]");if(interval){reportInterval=interval.dataset.reportInterval;render();return;}
  const action=e.target.closest("[data-action]")?.dataset.action;
@@ -779,7 +835,7 @@ document.addEventListener("click",e=>{
  if(action==="add-sla-condition"){main.querySelector(".sla-conditions")?.insertAdjacentHTML("beforeend",renderSlaCondition());return;}
  if(action==="remove-sla-condition"){e.target.closest(".sla-condition-row")?.remove();return;}
  if(action==="sla-learn-more"){toast("SLA dihitung sejak percakapan ditugaskan kepada agent.");return;}
- if(action==="report-export"){exportGeneralReport(e.target.closest("[data-report-export]")?.dataset.reportExport||"conversations");return;}
+ if(action==="report-export"){const button=e.target.closest("[data-report-export]");exportGeneralReport(button?.dataset.reportExport||"conversations",button?.dataset.format||"csv");return;}
  if(action==="reset-survey-report-filters"){surveyReportPeriod="all";surveyReportChannel="all";surveyReportDay="";surveyReportAgent="all";render();return;}
  if(action==="report-page-back"){reportListPage=Math.max(1,reportListPage-1);render();return;}
  if(action==="report-page-forward"){reportListPage=Math.min(Math.ceil(reportScopedTickets().length/reportRowsPerPage),reportListPage+1);render();return;}
@@ -805,13 +861,17 @@ document.addEventListener("click",e=>{
  }
  if(!action)return;
     if(action==="dismiss"){if(e.target.classList.contains("modal-backdrop")||e.target.closest('button[data-action="dismiss"]')){const closedModal=showModal;showModal=false;render();const trigger={"custom-view":"toggle-custom-view","invite-user":"invite-user","create-role":"create-role","integration-add":"add-integration","confirm-complete":"complete"}[closedModal];if(trigger)main.querySelector(`[data-action="${trigger}"]`)?.focus();if(closedModal==="integration-edit")main.querySelector(`[data-integration-id="${selectedIntegrationId}"]`)?.focus();if(closedModal==="broadcast")document.getElementById("notificationToggle").focus();}return;}
- if(action==="handover"||action==="edit-detail"||action==="add-profile"){showModal=action==="edit-detail"?"edit":action==="add-profile"?"profile":action;render();return;}
+ if(action==="handover"||action==="edit-detail"||action==="add-profile"){if(action==="handover"&&state.sessionRole==="Agent"){toast("Handover hanya untuk Supervisor atau Admin.");return;}showModal=action==="edit-detail"?"edit":action==="add-profile"?"profile":action;render();return;}
   if(action==="toggle-custom-view"){showModal="custom-view";render();return;}
  if(action==="share-chat"){if(!state.agents[0].online)return;inboxView="My Chats";render();return;}
  const t=ticket();
  if(action==="copy-id"){navigator.clipboard?.writeText(t.userId).then(()=>toast("ID pengguna disalin."),()=>toast(t.userId));return;}
  if(action==="complete"){if(["Selesai","Ditutup"].includes(t.status))return;showModal="confirm-complete";render();main.querySelector('.complete-confirm-modal [autofocus]')?.focus();return;}
- if(action==="confirm-complete-yes"){if(showModal!=="confirm-complete"||["Selesai","Ditutup"].includes(t.status))return;t.status="Selesai";t.resolvedAt=new Date().toISOString();inboxView="Resolved";channelFilter="Semua kanal";log(t,"Percakapan diselesaikan oleh "+state.agents[0].name+". Survei CSAT tersedia untuk pelanggan.");save();showModal=false;render();toast("Percakapan selesai.");return;}
+ if(action==="toggle-pending"){if(t.status==="Menunggu pelanggan"){const last=t.pendingIntervals.at(-1);if(last&&!last.end)last.end=new Date().toISOString();t.status="Sedang ditangani";}else{t.pendingIntervals.push({start:new Date().toISOString(),end:null});t.status="Menunggu pelanggan";}save();render();return;}
+ if(action==="confirm-complete-yes"){if(showModal!=="confirm-complete"||["Selesai","Ditutup"].includes(t.status))return;t.status="Selesai";t.resolvedAt=new Date().toISOString();const pause=t.pendingIntervals.at(-1);if(pause&&!pause.end)pause.end=t.resolvedAt;syncSla(t);const sent=sendSurveys(t);routeQueued();inboxView="Resolved";channelFilter="Semua kanal";log(t,"Percakapan diselesaikan oleh "+state.agents[0].name+". "+sent+" survei terkirim.");save();showModal=false;render();toast("Percakapan selesai.");return;}
+ if(action==="report-clear-dates"){reportFrom=state.tickets.reduce((earliest,item)=>{const day=reportDateKey(item.created);return day<earliest?day:earliest;},reportDateFilter);reportTo=reportDateFilter;render();return;}
+ if(action==="delete-holiday"){const removed=state.settings.holidays.splice(Number(e.target.dataset.index),1)[0];if(removed?.description==="Tanggal merah")state.settings.holiday="";save();render();return;}
+ if(action==="send-survey"){const sent=sendSurveys(t,true);save();render();toast(sent?sent+" survei dikirim.":"Tidak ada survei aktif untuk kanal ini.");return;}
 });
 document.addEventListener("contextmenu",e=>{const item=e.target.closest("[data-ticket]");if(!item)return;e.preventDefault();openTicket(item.dataset.ticket);});
 document.addEventListener("input",e=>{
@@ -845,7 +905,10 @@ document.addEventListener("change",e=>{
  else if(e.target.id==="surveyReportAgent")surveyReportAgent=e.target.value;
  else if(e.target.id==="reportTimezone")reportTimezoneFilter=e.target.value;
  else if(e.target.id==="reportChannel")reportChannelFilter=e.target.value;
- else if(e.target.id==="reportDate")reportDateFilter=e.target.value;
+ else if(e.target.id==="reportDate"){reportDateFilter=e.target.value;reportFrom=reportDateFilter;reportTo=reportDateFilter;}
+ else if(e.target.id==="reportFrom")reportFrom=e.target.value;
+ else if(e.target.id==="reportTo")reportTo=e.target.value;
+ else if(e.target.id==="reportAgent")reportAgentFilter=e.target.value;
  else if(e.target.id==="reportDivision")reportDivisionFilter=e.target.value;
  else if(e.target.id==="reportRowsPerPage")reportRowsPerPage=Number(e.target.value);
  else return;
@@ -881,10 +944,18 @@ document.addEventListener("submit",async e=>{
   if(!name||!school||!issue){toast("Isi nama orang tua, sekolah, dan kendala.");return;}
   startUserChat({userId:"GUEST-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),name,school,channel:"PSP Mobile",source:"Closepay",scope:"Luar",origin:"guest",text:issue});return;
  }
- if(e.target.id!=="userChatForm"&&!e.target.classList.contains("user-rating-form"))return;
+ if(e.target.id!=="userChatForm"&&!e.target.classList.contains("user-rating-form")&&e.target.id!=="userSurveyForm")return;
  e.preventDefault();
  const form=e.target,currentUser=state.tickets.find(item=>item.id===userPreviewTicketId),target=state.tickets.find(item=>item.id===(form.classList.contains("user-rating-form")?new FormData(form).get("ticketId"):userPreviewTicketId));
  if(!target||target.userId!==currentUser?.userId)return;
+ if(form.id==="userSurveyForm"){
+  const data=new FormData(form),survey=target.surveys.find(item=>item.type===data.get("type")&&item.status==="sent");
+  const score=Number(data.get("score")),range=survey?.type==="nps"?[0,10]:survey?.type==="ces"?[1,7]:[1,5];
+  if(!survey||new Date(survey.expiresAt)<new Date()||!Number.isInteger(score)||score<range[0]||score>range[1]){toast("Survei tidak tersedia atau sudah kedaluwarsa.");return;}
+  survey.score=score;survey.comment=String(data.get("comment")||"").trim();survey.status="answered";survey.answeredAt=new Date().toISOString();
+  if(survey.type==="csat"){target.rating=score;target.csat=score>=4?"Puas":score===3?"Netral":"Tidak puas";target.csatComment=survey.comment;target.csatResponseAt=survey.answeredAt;}
+  log(target,"Respons "+survey.type.toUpperCase()+" dari pelanggan: "+score+".");save();render();toast("Terima kasih atas penilaian Anda.");return;
+ }
  if(form.classList.contains("user-rating-form")){
   if(!["Selesai","Ditutup"].includes(target.status)||target.rating){toast("Penilaian belum tersedia.");return;}
   const data=new FormData(form),rating=Number(data.get("rating"));
@@ -903,14 +974,17 @@ document.addEventListener("submit",async e=>{
   const pendingIndex=target.messages.indexOf(pending);if(pendingIndex>=0)target.messages.splice(pendingIndex,1);
   if(!addChatMessage(target,{...pending,delivery:"sent",...(attachment?{file:attachment}:{})})){render();return;}
   target.unread=(target.unread||0)+1;
+  if(["Selesai","Ditutup"].includes(target.status)){target.resolvedAt=null;target.firstAgentResponseAt=null;target.created=new Date().toISOString();target.agent=CSEngine.businessState(new Date(),state.settings).open?CSEngine.chooseAgent(state.tickets,state.agents,state.settings,target.agent)?.name||null:null;target.status=target.agent?"Sedang ditangani":"Belum ditugaskan";log(target,"Percakapan dibuka kembali oleh pelanggan.");}
   if(target.status==="Menunggu pelanggan")target.status="Sedang ditangani";
+  routeQueued();
   log(target,"Pesan pelanggan masuk"+(attachment?" dengan lampiran.":"."));
   if(target.agent===state.agents[0].name)addNotification("chat","Pesan chat baru",target.name+" · "+target.channel,target.id);
   save();render();toast("Pesan terkirim ke inbox agent.");
  }catch(error){if(pending){const index=target.messages.indexOf(pending);if(index>=0)target.messages.splice(index,1);save();render();}toast(error.message||"File gagal diunggah.");button.disabled=false;}
 });
 document.addEventListener("submit",e=>{
-  const form=e.target;if(!["replyForm","handoverForm","profileForm","detailForm","csatForm","autoResponderForm","officeHoursForm","templateForm","tagForm","customerIdleForm","customViewForm","noteForm","inviteUserForm","createRoleForm","slaPolicyForm","integrationForm","broadcastForm","customerSurveyForm"].includes(form.id))return;e.preventDefault();
+  const form=e.target;if(!["replyForm","handoverForm","profileForm","detailForm","csatForm","autoResponderForm","officeHoursForm","routingSlaForm","holidayForm","templateForm","tagForm","customerIdleForm","customViewForm","noteForm","inviteUserForm","createRoleForm","slaPolicyForm","integrationForm","broadcastForm","customerSurveyForm"].includes(form.id))return;e.preventDefault();
+  if(state.sessionRole!=="Admin"&&["autoResponderForm","officeHoursForm","routingSlaForm","holidayForm","templateForm","tagForm","customerIdleForm","slaPolicyForm","customerSurveyForm","integrationForm","inviteUserForm","createRoleForm"].includes(form.id)){toast("Pengaturan hanya untuk Admin.");return;}
  const d=Object.fromEntries(new FormData(form));const t=ticket();
   if(form.id==="customerSurveyForm"){
     const config=copy(state.settings.customerSurvey),channels=state.integrations.filter(item=>item.status==="Aktif");
@@ -938,6 +1012,7 @@ document.addEventListener("submit",e=>{
     config.thankYouMessage=form.querySelector('[name="thankYouMessage"]').value.trim();
     if(!config.closingMessage||!config.surveyTitle||!config.thankYouMessage){toast("Complete all required survey greeting fields.");return;}
     config.sendMethod=form.querySelector('[name="sendMethod"]:checked')?.value||"automatic";
+    config.expiryHours=Math.max(1,Number(d.expiryHours)||24);
     state.settings.customerSurvey=config;save();render();toast("Customer survey settings saved.");return;
   }
   if(form.id==="broadcastForm"){
@@ -994,16 +1069,19 @@ document.addEventListener("submit",e=>{
   filePromise.then(attachment=>{
    const index=t.messages.indexOf(pending);if(index>=0)t.messages.splice(index,1);
    if(!addChatMessage(t,{...pending,delivery:"sent",...(attachment?{file:attachment}:{})})){render();return;}
-   log(t,internal?"Catatan internal ditambahkan.":"Balasan dikirim oleh "+state.agents[0].name+".");save();render();toast(internal?"Catatan internal disimpan.":"Pesan tersimpan di prototipe.");
+   if(!internal&&!t.firstAgentResponseAt)t.firstAgentResponseAt=pending.sentAt;
+   syncSla(t);log(t,internal?"Catatan internal ditambahkan.":"Balasan dikirim oleh "+state.agents[0].name+".");save();render();toast(internal?"Catatan internal disimpan.":"Pesan tersimpan di prototipe.");
   }).catch(error=>{const index=t.messages.indexOf(pending);if(index>=0)t.messages.splice(index,1);render();toast(error.message||"File gagal diunggah.");});return;
  }
- if(form.id==="handoverForm"){const target=state.agents.find(a=>a.name===d.agent);if(!target?.online){toast("Pilih agent online.");return;}const old=t.agent||"Belum ditugaskan";t.agent=d.agent;state.transfers.push({id:t.id,from:old,to:d.agent,reason:d.reason,at:stamp()});log(t,"Handover: "+old+" → "+d.agent+". Note: "+d.reason);t.messages.push({by:"Sistem",text:"Percakapan dialihkan ke "+d.agent+".",at:nowWib(),type:"system"});addNotification("handover",d.agent===state.agents[0].name?"Handover untuk Anda":"Handover berhasil",t.name+" · "+old+" → "+d.agent,t.id);save();showModal=false;render();toast("Handover dan log tersimpan.");return;}
+ if(form.id==="handoverForm"){if(state.sessionRole==="Agent")return;const target=state.agents.find(a=>a.name===d.agent);const load=state.tickets.filter(room=>room.id!==t.id&&room.agent===d.agent&&!['Selesai','Ditutup','Belum ditugaskan'].includes(room.status)).length;if(!target?.online||load>=state.settings.maxOngoingChats){toast("Pilih agent online dengan kapasitas tersedia.");return;}const old=t.agent||"Belum ditugaskan";t.agent=d.agent;t.status="Sedang ditangani";state.transfers.push({id:t.id,from:old,to:d.agent,reason:d.reason,at:stamp()});log(t,"Handover: "+old+" → "+d.agent+". Note: "+d.reason);t.messages.push({by:"Sistem",text:"Percakapan dialihkan ke "+d.agent+".",at:nowWib(),type:"system"});addNotification("handover",d.agent===state.agents[0].name?"Handover untuk Anda":"Handover berhasil",t.name+" · "+old+" → "+d.agent,t.id);save();showModal=false;render();toast("Handover dan log tersimpan.");return;}
  if(form.id==="customViewForm"){const name=String(d.name||"").trim();if(!name)return;const id="view-"+Date.now();state.customViews.push({id,name,criteria:{channel:d.channel,session:d.session,tag:d.tag,unresponded:d.unresponded}});inboxView=id;showModal=false;save();render();toast("Custom view disimpan.");return;}
  if(form.id==="noteForm"){const note=String(d.note||"").trim(),fileName=String(d.file?.name||"").trim();if(!note&&!fileName){toast("Isi note atau pilih file.");return;}t.notes.push({at:stamp(),text:note,fileName});log(t,"Note internal ditambahkan"+(fileName?" dengan file "+fileName:"")+".");save();render();toast("Note disimpan.");return;}
  if(form.id==="profileForm"){t.customerProfile={name:String(d.name||"").trim(),email:String(d.email||"").trim(),school:String(d.school||"").trim(),phone:String(d.phone||"").trim()};log(t,"Customer profile ditambahkan.");save();showModal=false;render();toast("Customer profile disimpan.");return;}
  if(form.id==="detailForm"){["name","userId","child","school","version","phone"].forEach(k=>t[k]=String(d[k]||"").trim());log(t,"Detail pelanggan diperbarui.");save();showModal=false;render();toast("Detail pelanggan diperbarui.");return;}
  if(form.id==="csatForm"){t.rating=Number(d.rating);t.csat=d.csat;t.csatComment=String(d.comment||"").trim();t.csatResponseAt=new Date().toISOString();log(t,"Respons CSAT: "+t.rating+" bintang, "+t.csat+".");save();showModal=false;render();toast("Respons CSAT dicatat.");return;}
- if(form.id==="autoResponderForm"){const greeting=String(d.greeting||"").trim(),afterHours=String(d.afterHours||"").trim();if(!greeting||!afterHours){toast("Isi kedua balasan otomatis.");return;}state.settings.greeting=greeting;state.settings.afterHours=afterHours;save();render();toast("Auto Responder disimpan.");return;}
+ if(form.id==="autoResponderForm"){const greeting=String(d.greeting||"").trim(),afterHours=String(d.afterHours||"").trim(),busyReply=String(d.busyReply||"").trim();if(!greeting||!afterHours||!busyReply){toast("Isi tiga balasan otomatis.");return;}state.settings.greeting=greeting;state.settings.afterHours=afterHours;state.settings.busyReply=busyReply;save();render();toast("Auto Responder disimpan.");return;}
+ if(form.id==="routingSlaForm"){const method=String(d.routingMethod);if(!["manual","round-robin","least-active"].includes(method))return;state.settings.routingMethod=method;state.settings.maxOngoingChats=Math.max(1,Number(d.maxOngoingChats)||5);state.settings.frtMinutes=Math.max(1,Number(d.frtMinutes)||15);state.settings.resolutionMinutes=Math.max(1,Number(d.resolutionMinutes)||30);state.settings.pausePendingSla=Boolean(d.pausePendingSla);routeQueued();save();render();toast("Routing & SLA disimpan.");return;}
+ if(form.id==="holidayForm"){if(!d.start||!d.end||d.end<d.start){toast("Rentang tanggal tidak valid.");return;}state.settings.holidays.push({start:d.start,end:d.end,description:String(d.description||"").trim()});save();render();toast("Hari libur ditambahkan.");return;}
  if(form.id==="officeHoursForm"){
    const hours={};let active=0;
    for(const day of [0,1,2,3,4,5,6]){
@@ -1016,6 +1094,7 @@ document.addEventListener("submit",e=>{
    if(!["Asia/Jakarta","Asia/Makassar","Asia/Jayapura"].includes(d.timezone)){toast("Pilih geolocation yang tersedia.");return;}
    state.settings.officeHours=hours;state.settings.timezone=d.timezone;
    state.settings.holiday=d.holiday;state.settings.holidayReply=String(d.holidayReply||"").trim();
+   state.settings.holidays=state.settings.holidays.filter(item=>item.description!=="Tanggal merah");if(d.holiday)state.settings.holidays.push({start:d.holiday,end:d.holiday,description:"Tanggal merah"});
    save();render();toast("Office Hours disimpan.");return;
  }
  if(form.id==="templateForm"){
@@ -1054,10 +1133,11 @@ document.getElementById("settingsMenuToggle").addEventListener("click",event=>{
   }else submenu.hidden=!submenu.hidden;
   event.currentTarget.setAttribute("aria-expanded",String(!submenu.hidden));
 });
-document.getElementById("offlineToggle").addEventListener("click",()=>{const me=state.agents[0];me.online=!me.online;if(!me.online){state.tickets.filter(t=>t.agent===me.name&&t.status!=="Selesai").forEach(t=>{const replacement=assignAgent();if(replacement){state.transfers.push({id:t.id,from:me.name,to:replacement,reason:"Agent offline / unsigned",at:stamp()});log(t,"Agent offline. Chat dialihkan ke "+replacement+".");t.agent=replacement;}else{t.agent=null;t.status="Belum ditugaskan";log(t,"Agent offline. Menunggu penugasan.");}});}else{state.tickets.filter(t=>!t.agent&&t.status==="Belum ditugaskan").forEach(t=>{t.agent=assignAgent();if(t.agent){t.status="Sedang ditangani";log(t,"Agent online. Chat ditugaskan otomatis ke "+t.agent+".");}});}save();render();toast(me.online?"Status online. Chat tertunda dibagikan otomatis.":"Offline. Chat aktif dialihkan.");});
-document.getElementById("profileButton").addEventListener("click",()=>toast("Peran tersedia: Admin super, Admin biasa, Agent."));
-setInterval(()=>{document.getElementById("wibClock").textContent=nowWib()+" WIB";updateOverdue();},30000);
-updateOverdue();
+document.getElementById("offlineToggle").addEventListener("click",()=>{const me=state.agents[0],at=new Date().toISOString();if(me.online){me.availabilityLog.push({start:me.onlineSince||at,end:at,status:"online"});me.onlineSince=null;}else me.onlineSince=at;me.online=!me.online;if(!me.online){state.tickets.filter(room=>room.agent===me.name&&!['Selesai','Ditutup'].includes(room.status)).forEach(room=>{room.agent=null;room.status="Belum ditugaskan";log(room,"Agent offline. Chat masuk antrean.");});}routeQueued();save();render();toast(me.online?"Status online. Antrean dibagikan sesuai kapasitas.":"Offline. Chat aktif masuk antrean.");});
+const roleSelect=document.createElement("select");roleSelect.id="demoRole";roleSelect.setAttribute("aria-label","Simulasi peran");roleSelect.title="Simulasi peran";roleSelect.innerHTML=["Admin","Supervisor","Agent"].map(role=>`<option ${state.sessionRole===role?"selected":""}>${role}</option>`).join("");document.getElementById("profileButton").before(roleSelect);roleSelect.addEventListener("change",()=>{state.sessionRole=roleSelect.value;if(state.sessionRole!=="Admin"&&(page.startsWith("settings")||page.startsWith("account")))page="tickets";if(state.sessionRole==="Agent"&&page.startsWith("report"))page="tickets";save();render();});
+document.getElementById("profileButton").addEventListener("click",()=>toast("Mode simulasi: "+state.sessionRole));
+setInterval(()=>{document.getElementById("wibClock").textContent=nowWib()+" WIB";expireSurveys();routeQueued();state.tickets.forEach(syncSla);save();},30000);
+expireSurveys();
 if(window.matchMedia?.("(max-width: 700px)")?.matches)document.body.classList.add("sidebar-collapsed");
 syncSidebar();
 render();

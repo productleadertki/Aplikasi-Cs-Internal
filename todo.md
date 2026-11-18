@@ -110,3 +110,10 @@
 
 - [x] Unggah dokumentasi, log, todo, arsip, dan sumber hosting ke GitHub
 - [x] Verifikasi semua file terunggah tanpa tasks/ atau Git bersarang
+
+- [x] Implementasi Business Hours, Holiday rentang tanggal, dan tiga auto-responder
+- [x] Implementasi routing FIFO, metode assign, kapasitas, offline, dan reopen
+- [x] Implementasi SLA jam kerja, pause Pending, target, dan breach flags
+- [x] Implementasi survei otomatis/manual, expiry, CSAT/CES/NPS, response rate
+- [x] Lengkapi General Report, filter, analitik, dan ekspor CSV/XLSX
+- [x] Uji AC-01 sampai AC-04, unggah GitHub, dan perbarui live site
