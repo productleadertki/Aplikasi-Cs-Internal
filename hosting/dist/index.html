@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Closepay | Layanan Pelanggan</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <a class="brand" href="#dashboard" data-page="dashboard" aria-label="Closepay" title="Closepay"><span class="brand-mark">p</span><span class="brand-name">closepay</span></a>
+    <button class="sidebar-close" id="sidebarClose" aria-label="Ringkas menu">×</button>
+    <div class="workspace-label">CUSTOMER SERVICE <span>●</span></div>
+    <nav class="navigation" aria-label="Navigasi utama">
+      <div class="nav-group">
+        <div class="nav-heading">RUANG KERJA</div>
+        <button class="nav-link" data-page="user-preview" title="Tampilan User"><span class="nav-icon" aria-hidden="true">▣</span><span class="nav-label">Tampilan User</span></button>
+        <button class="nav-link dashboard-parent" id="dashboardMenuToggle" title="Dashboard" aria-expanded="false" aria-controls="dashboardSubmenu"><span class="nav-icon" aria-hidden="true">▦</span><span class="nav-label">Dashboard</span><span class="nav-chevron" aria-hidden="true">⌄</span></button>
+        <div class="nav-submenu" id="dashboardSubmenu" hidden><button class="nav-sublink" data-page="dashboard">Customer Overview</button><button class="nav-sublink" data-page="dashboard-sla">SLA Overview</button></div>
+        <button class="nav-link" data-page="tickets" title="Inbox pelanggan"><span class="nav-icon" aria-hidden="true">▤</span><span class="nav-label">Inbox pelanggan</span><span class="nav-count" id="navCount">4</span></button>
+        <button class="nav-link" data-page="transfers" title="Log handover"><span class="nav-icon" aria-hidden="true">⇄</span><span class="nav-label">Log handover</span></button>
+        <button class="nav-link report-parent" id="reportMenuToggle" title="Report" aria-expanded="false" aria-controls="reportSubmenu"><span class="nav-icon" aria-hidden="true">▥</span><span class="nav-label">Report</span><span class="nav-chevron" aria-hidden="true">⌄</span></button>
+        <div class="nav-submenu report-submenu" id="reportSubmenu" hidden>
+          <button class="nav-sublink nav-settings-direct" data-page="report-general">General Report</button>
+          <div class="nav-submenu-section">
+            <button class="nav-subheading" type="button" data-settings-group="report-agent" aria-expanded="false" aria-controls="reportAgentGroup">Agent Performance <span aria-hidden="true">⌄</span></button>
+            <div class="nav-subgroup report-subgroup" id="reportAgentGroup" hidden>
+              <button class="nav-sublink" data-page="report-sla">SLA</button>
+              <button class="nav-sublink" data-page="report-quality">Quality Scoring</button>
+              <button class="nav-sublink" data-page="report-performance">Performance</button>
+            </div>
+          </div>
+          <div class="nav-submenu-section">
+            <button class="nav-subheading" type="button" data-settings-group="report-survey" aria-expanded="false" aria-controls="reportSurveyGroup">Survey <span aria-hidden="true">⌄</span></button>
+            <div class="nav-subgroup report-subgroup" id="reportSurveyGroup" hidden>
+              <button class="nav-sublink" data-page="report-csat">CSAT</button>
+              <button class="nav-sublink" data-page="report-ces">CES</button>
+              <button class="nav-sublink" data-page="report-nps">NPS</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="nav-group">
+        <div class="nav-heading">KONTEN & KONTROL</div>
+        <button class="nav-link settings-parent" id="settingsMenuToggle" title="Pengaturan" aria-expanded="true" aria-controls="settingsSubmenu"><span class="nav-icon" aria-hidden="true">⚙</span><span class="nav-label">Pengaturan</span><span class="nav-chevron" aria-hidden="true">⌄</span></button>
+        <div class="nav-submenu" id="settingsSubmenu">
+          <div class="nav-submenu-section">
+            <button class="nav-subheading" type="button" data-settings-group="account" aria-expanded="true" aria-controls="settingsAccountGroup">Account <span aria-hidden="true">⌄</span></button>
+            <div class="nav-subgroup" id="settingsAccountGroup">
+              <button class="nav-sublink" data-page="account-users">User</button>
+              <button class="nav-sublink" data-page="account-roles">Roles</button>
+            </div>
+          </div>
+          <button class="nav-sublink nav-settings-direct" data-page="settings-sla">SLA</button>
+          <div class="nav-submenu-section">
+            <button class="nav-subheading" type="button" data-settings-group="feature" aria-expanded="true" aria-controls="settingsFeatureGroup">Feature Configuration <span aria-hidden="true">⌄</span></button>
+            <div class="nav-subgroup" id="settingsFeatureGroup">
+              <button class="nav-sublink" data-page="settings">Inbox</button>
+              <button class="nav-sublink" data-page="settings-agents">Agent Management</button>
+            </div>
+          </div>
+          <button class="nav-sublink nav-settings-direct" data-page="settings-integration">Integration</button>
+          <div class="nav-submenu-section">
+            <button class="nav-subheading" type="button" data-settings-group="performance" aria-expanded="true" aria-controls="settingsPerformanceGroup">Performance Management <span aria-hidden="true">⌄</span></button>
+            <div class="nav-subgroup" id="settingsPerformanceGroup">
+              <button class="nav-sublink" data-page="settings-user-performance">User Performance</button>
+              <button class="nav-sublink" data-page="settings-customer-survey">Customer Survey</button>
+              <button class="nav-sublink" data-page="settings-scorecard">Scorecard</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </nav>
+    <div class="sidebar-foot" title="Waktu layanan: WIB"><span class="status-dot"></span><span class="sidebar-foot-label">Waktu layanan: WIB <small>GMT+7 · Asia/Jakarta</small></span></div>
+  </aside>
+  <header class="topbar">
+    <button class="icon-button menu-button" id="menuToggle" aria-label="Ringkas menu" aria-expanded="true" aria-controls="sidebar">☰</button>
+    <div class="topbar-context"><b id="topbarTitle">Inbox pelanggan</b></div>
+    <div class="topbar-actions">
+      <span class="wib-clock" id="wibClock" aria-label="Waktu WIB"></span>
+      <div class="notification-wrap">
+        <button class="icon-button notification-toggle" id="notificationToggle" type="button" aria-label="Notifikasi" aria-expanded="false" aria-controls="notificationPanel"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="notification-count" id="notificationCount" hidden>0</span></button>
+        <section class="notification-panel panel" id="notificationPanel" aria-label="Daftar notifikasi" hidden></section>
+      </div>
+      <button class="offline-control" id="offlineToggle" aria-pressed="false"><span class="status-dot"></span><span id="availability">Offline</span><span class="switch"><i></i></span></button>
+      <button class="profile-button" id="profileButton" title="Peran akun"><span class="avatar profile-avatar">R</span><span class="profile-name">Rafiu Sidqi<small id="profileRole">Agent</small></span></button>
+    </div>
+  </header>
+  <main class="main-content" id="mainContent"></main>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
