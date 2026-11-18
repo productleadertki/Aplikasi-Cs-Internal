@@ -15,9 +15,12 @@ const queue=Array.from({length:20},(_,i)=>({id:String(i),created:new Date(Date.p
 const assigned=rules.routeQueue(queue,[{name:"A",role:"Agent",online:true}],settings,new Date("2026-11-18T09:00:00+07:00"));
 assert.deepEqual(assigned.map(item=>item.ticket.id),["0","1","2","3","4"]);
 assert.equal(queue.filter(item=>item.status==="Belum ditugaskan").length,15);
+const reopenedQueue=[{id:"old",created:"2026-11-01T08:00:00+07:00",queuedAt:"2026-11-18T09:02:00+07:00",status:"Belum ditugaskan",agent:null},{id:"new",created:"2026-11-18T09:01:00+07:00",status:"Belum ditugaskan",agent:null}];
+assert.equal(rules.routeQueue(reopenedQueue,[{name:"B",role:"Agent",online:true}],{...settings,maxOngoingChats:1},new Date("2026-11-18T09:03:00+07:00"))[0].ticket.id,"new");
 const resolved={created:"2026-11-18T09:00:00+07:00",firstAgentResponseAt:"2026-11-18T09:05:00+07:00",resolvedAt:"2026-11-18T09:20:00+07:00",status:"Selesai"};
 assert.equal(rules.metrics(resolved,settings,new Date("2026-11-18T12:00:00+07:00")).resolutionMs,20*60000);
 assert.equal(rules.metrics(resolved,settings).stopped,true);
+assert.equal(rules.metrics({...resolved,created:"2026-11-01T09:00:00+07:00",openedAt:"2026-11-18T09:00:00+07:00"},settings).resolutionMs,20*60000);
 const surveys=[...Array.from({length:50},()=>({type:"csat",status:"answered",score:4})),...Array.from({length:20},()=>({type:"csat",status:"answered",score:2})),...Array.from({length:30},()=>({type:"csat",status:"expired"}))];
 assert.deepEqual(rules.surveyScores(surveys),{sent:100,answered:70,responseRate:70,csat:71.43,csatLow:28.57,ces:null,nps:null});
 assert.equal(rules.surveyScores([{type:"ces",status:"answered",score:7},{type:"ces",status:"answered",score:1},{type:"nps",status:"answered",score:10},{type:"nps",status:"answered",score:0}]).ces,4);

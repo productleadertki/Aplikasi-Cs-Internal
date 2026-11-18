@@ -42,7 +42,7 @@ const CSEngine = (() => {
   function routeQueue(tickets,agents,settings,at=new Date()) {
     if(!businessState(at,settings).open || settings.routingMethod==="manual")return [];
     const assigned=[];
-    const queue=tickets.filter(ticket=>ticket.status==="Belum ditugaskan").sort((a,b)=>new Date(a.created)-new Date(b.created));
+    const queue=tickets.filter(ticket=>ticket.status==="Belum ditugaskan").sort((a,b)=>new Date(a.queuedAt||a.created)-new Date(b.queuedAt||b.created));
     for(const ticket of queue){
       const agent=chooseAgent(tickets,agents,settings);
       if(!agent)break;
@@ -51,7 +51,7 @@ const CSEngine = (() => {
     return assigned;
   }
   function metrics(ticket,settings,now=new Date()) {
-    const start=ticket.created,first=ticket.firstAgentResponseAt,closed=ticket.resolvedAt;
+    const start=ticket.openedAt||ticket.created,first=ticket.firstAgentResponseAt,closed=ticket.resolvedAt;
     const end=closed||now;
     const pauses=settings.pausePendingSla?ticket.pendingIntervals||[]:[];
     const firstMs=businessMs(start,first||end,settings,pauses),resolutionMs=businessMs(start,end,settings,pauses);
@@ -59,7 +59,7 @@ const CSEngine = (() => {
     return {firstMs,resolutionMs,firstStopped:Boolean(first),stopped:Boolean(closed),paused:!closed&&(ticket.status==="Menunggu pelanggan"&&settings.pausePendingSla||!businessState(now,settings).open),is_frt_breached:firstMs>frtTarget,is_resolution_breached:resolutionMs>resolutionTarget};
   }
   function surveyScores(surveys) {
-    const sent=surveys.filter(item=>item.status!=="draft"),answered=sent.filter(item=>item.status==="answered"&&Number.isFinite(Number(item.score)));
+    const sent=surveys.filter(item=>item.status!=="draft"),answered=sent.filter(item=>item.status==="answered"&&item.score!==null&&item.score!==undefined&&item.score!==""&&Number.isFinite(Number(item.score)));
     const type=id=>answered.filter(item=>item.type===id),csat=type("csat"),ces=type("ces"),nps=type("nps");
     const rate=(n,d)=>d?Number((n/d*100).toFixed(2)):null;
     return {sent:sent.length,answered:answered.length,responseRate:rate(answered.length,sent.length),csat:rate(csat.filter(item=>Number(item.score)>=4).length,csat.length),csatLow:rate(csat.filter(item=>Number(item.score)<=3).length,csat.length),ces:ces.length?Number((ces.reduce((sum,item)=>sum+Number(item.score),0)/ces.length).toFixed(2)):null,nps:nps.length?Number(((nps.filter(item=>item.score>=9).length-nps.filter(item=>item.score<=6).length)/nps.length*100).toFixed(2)):null};

@@ -54,7 +54,7 @@ state.settings.busyReply ||= "Terima kasih sudah menghubungi Closepay. Agen belu
 state.settings.frtMinutes ||= 15;
 state.settings.resolutionMinutes ||= 30;
 state.settings.pausePendingSla ??= true;
-state.agents.forEach(agent=>{agent.onlineSince ||= agent.online?new Date().toISOString():null;agent.availabilityLog ||= [];});
+state.agents.forEach(agent=>{agent.trackingSince ||= new Date().toISOString();agent.onlineSince ||= agent.online?agent.trackingSince:null;agent.availabilityLog ||= [];});
 state.tickets.forEach(room=>{room.surveys ||= [];room.pendingIntervals ||= [];const first=room.messages?.find(message=>message.type==="agent"&&!message.text?.startsWith("[Internal] "));if(first&&!room.firstAgentResponseAt){const time=slaMessageTime(room,first);if(Number.isFinite(time))room.firstAgentResponseAt=new Date(time).toISOString();}if(["Selesai","Ditutup"].includes(room.status)&&!room.resolvedAt&&first){const time=slaMessageTime(room,[...room.messages].reverse().find(message=>message.type==="agent"));if(Number.isFinite(time))room.resolvedAt=new Date(time).toISOString();}if(room.rating>0&&!room.surveys.some(item=>item.type==="csat")){room.surveys.push({type:"csat",status:"answered",score:room.rating,comment:room.csatComment||"",sentAt:room.resolvedAt||room.created,answeredAt:room.csatResponseAt||room.resolvedAt||room.created,expiresAt:room.csatResponseAt||room.resolvedAt||room.created,resolvedAt:room.resolvedAt,question:"Bagaimana layanan kami?"});}});
 state.settings.officeHours ||= Object.fromEntries([0,1,2,3,4,5,6].map(day=>[day,{enabled:day>0&&day<6||state.settings.workdays==="Setiap hari"||day===6&&state.settings.workdays==="Senin–Sabtu",in:state.settings.open||"08:00",out:state.settings.close||"17:00"}]));
 state.settings.officeTemplate ||= state.templates[0].command;
@@ -452,16 +452,17 @@ function reportAverageFirstResponse(items){
 function reportOperationalMetrics(items){
  const first=items.filter(item=>item.firstAgentResponseAt),closed=items.filter(item=>item.resolvedAt);
  const average=(list,key)=>list.length?list.reduce((sum,item)=>sum+syncSla(item)[key],0)/list.length/1000:0;
+ const responseTimes=items.flatMap(item=>{let waiting=null;const times=[];for(const message of item.messages||[]){const at=slaMessageTime(item,message);if(!Number.isFinite(at))continue;if(message.type==="customer"&&waiting===null)waiting=at;if(message.type==="agent"&&waiting!==null&&!message.text?.startsWith("[Internal] ")){times.push(CSEngine.businessMs(waiting,at,state.settings,state.settings.pausePendingSla?item.pendingIntervals||[]:[]));waiting=null;}}return times;});
  const responded=first.length,resolved=closed.length;
  const metFirst=first.filter(item=>!syncSla(item).is_frt_breached).length,metResolution=closed.filter(item=>!syncSla(item).is_resolution_breached).length;
- return {frt:average(first,"firstMs"),resolution:average(closed,"resolutionMs"),art:average(first,"firstMs"),frtCompliance:responded?metFirst/responded*100:null,resolutionCompliance:resolved?metResolution/resolved*100:null};
+ return {frt:average(first,"firstMs"),resolution:average(closed,"resolutionMs"),art:responseTimes.length?responseTimes.reduce((sum,value)=>sum+value,0)/responseTimes.length/1000:0,frtCompliance:responded?metFirst/responded*100:null,resolutionCompliance:resolved?metResolution/resolved*100:null};
 }
 function reportAgentAvailability(agent){
- const from=new Date(`${reportFrom||reportDateFilter}T00:00:00+07:00`).getTime(),to=Math.min(Date.now(),new Date(`${reportTo||reportDateFilter}T23:59:59+07:00`).getTime());
+ const from=Math.max(new Date(`${reportFrom||reportDateFilter}T00:00:00+07:00`).getTime(),new Date(agent.trackingSince).getTime()),to=Math.min(Date.now(),new Date(`${reportTo||reportDateFilter}T23:59:59+07:00`).getTime());
  if(to<=from)return {online:0,offline:0,shift:0};
  const spans=[...(agent.availabilityLog||[]),...(agent.onlineSince?[{start:agent.onlineSince,end:new Date().toISOString()}]:[])];
  const online=spans.reduce((sum,item)=>sum+Math.max(0,Math.min(to,new Date(item.end).getTime())-Math.max(from,new Date(item.start).getTime())),0);
- let shift=0;for(let day=from;day<=to;day+=86400000){const local=CSEngine.dateParts(day,state.settings.timezone),hours=state.settings.officeHours[local.day];if(hours?.enabled&&!state.settings.holidays.some(item=>local.date>=item.start&&local.date<=item.end)){const [inHour,inMinute]=hours.in.split(":").map(Number),[outHour,outMinute]=hours.out.split(":").map(Number);shift+=Math.max(0,(outHour*60+outMinute-inHour*60-inMinute)*60000);}}
+ const shift=CSEngine.businessMs(from,to,state.settings);
  return {online,offline:Math.max(0,to-from-online),shift};
 }
 function reportExportButton(section){return `<button type="button" class="report-export" data-action="report-export" data-report-export="${section}" data-format="csv">⇩ CSV</button><button type="button" class="report-export" data-action="report-export" data-report-export="${section}" data-format="xlsx">⇩ XLSX</button>`;}
@@ -472,7 +473,7 @@ function reportEmptyVisual(title,description,kind="chart"){
   const art=kind==="folder"?`<svg viewBox="0 0 120 100" aria-hidden="true"><path d="M22 22h28l9 9h39a7 7 0 0 1 7 7v44H15V29a7 7 0 0 1 7-7Z" fill="#76AEFF"/><path d="M16 40h89l-8 42H16Z" fill="#A9CCFF"/><circle cx="47" cy="51" r="20" fill="#BE7AE8"/><circle cx="47" cy="51" r="14" fill="#ECD9F8"/><text x="43" y="58" fill="#F2AD41" font-size="21" font-weight="700">?</text></svg>`:`<svg viewBox="0 0 120 100" aria-hidden="true"><ellipse cx="60" cy="84" rx="39" ry="7" fill="#E8EEF7"/><path d="m31 71 8-24 10 11 12-28 11 24 11-13 9 30Z" fill="#C5D0E0"/><path d="m47 70 11-17 8 9 13-27 9 35Z" fill="#A98BD7"/><circle cx="35" cy="35" r="14" fill="#D799B2"/><circle cx="35" cy="35" r="6" fill="#F8E7EB"/><circle cx="91" cy="42" r="12" fill="#D799B2"/><circle cx="91" cy="42" r="5" fill="#F8E7EB"/><path d="m48 76 25-16 13-19" fill="none" stroke="#D77B9C" stroke-width="5" stroke-linecap="round"/></svg>`;
   return `<div class="report-empty-visual">${art}<strong>${esc(title)}</strong><span>${esc(description)}</span></div>`;
 }
-function reportCsvCell(value){return `"${String(value??"").replaceAll('"','""')}"`;}
+function reportCsvCell(value){const text=String(value??"");return `"${(/^[\s]*[=+@-]/.test(text)?"'":"")+text.replaceAll('"','""')}"`;}
 function exportGeneralReport(section,format="csv"){
   const tickets=reportScopedTickets();
   let rows=[["Conversation ID","Customer","Channel","Agent","Status","Tag","Created"]];
@@ -743,7 +744,7 @@ function receiveIncoming(data){
   if(existing){
     const previousAgent=existing.agent;
     const reopened=["Selesai","Ditutup"].includes(existing.status);
-    if(reopened){existing.resolvedAt=null;existing.firstAgentResponseAt=null;existing.created=new Date().toISOString();existing.rating=0;existing.csat=null;existing.agent=CSEngine.businessState(new Date(),state.settings).open?CSEngine.chooseAgent(state.tickets,state.agents,state.settings,previousAgent)?.name||null:null;existing.status=existing.agent?"Sedang ditangani":"Belum ditugaskan";log(existing,"Percakapan dibuka kembali oleh pelanggan.");}
+    if(reopened){existing.resolvedAt=null;existing.firstAgentResponseAt=null;existing.openedAt=new Date().toISOString();existing.queuedAt=existing.openedAt;existing.rating=0;existing.csat=null;existing.agent=CSEngine.businessState(new Date(),state.settings).open?CSEngine.chooseAgent(state.tickets,state.agents,state.settings,previousAgent)?.name||null:null;existing.status=existing.agent?"Sedang ditangani":"Belum ditugaskan";log(existing,"Percakapan dibuka kembali oleh pelanggan.");}
     existing.messages.push({by:"Pelanggan",text:String(data.text),at:nowWib(),sentAt:new Date().toISOString(),type:"customer",delivery:"sent"});
     if(page==="tickets"&&selected===existing.id)markRoomRead(existing,"customer");
     if(page!=="tickets"||selected!==existing.id)existing.unread=(existing.unread||0)+1;
@@ -974,7 +975,7 @@ document.addEventListener("submit",async e=>{
   const pendingIndex=target.messages.indexOf(pending);if(pendingIndex>=0)target.messages.splice(pendingIndex,1);
   if(!addChatMessage(target,{...pending,delivery:"sent",...(attachment?{file:attachment}:{})})){render();return;}
   target.unread=(target.unread||0)+1;
-  if(["Selesai","Ditutup"].includes(target.status)){target.resolvedAt=null;target.firstAgentResponseAt=null;target.created=new Date().toISOString();target.agent=CSEngine.businessState(new Date(),state.settings).open?CSEngine.chooseAgent(state.tickets,state.agents,state.settings,target.agent)?.name||null:null;target.status=target.agent?"Sedang ditangani":"Belum ditugaskan";log(target,"Percakapan dibuka kembali oleh pelanggan.");}
+  if(["Selesai","Ditutup"].includes(target.status)){target.resolvedAt=null;target.firstAgentResponseAt=null;target.openedAt=new Date().toISOString();target.queuedAt=target.openedAt;target.agent=CSEngine.businessState(new Date(),state.settings).open?CSEngine.chooseAgent(state.tickets,state.agents,state.settings,target.agent)?.name||null:null;target.status=target.agent?"Sedang ditangani":"Belum ditugaskan";log(target,"Percakapan dibuka kembali oleh pelanggan.");}
   if(target.status==="Menunggu pelanggan")target.status="Sedang ditangani";
   routeQueued();
   log(target,"Pesan pelanggan masuk"+(attachment?" dengan lampiran.":"."));
